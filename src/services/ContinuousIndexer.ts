@@ -20,10 +20,10 @@ export class ContinuousIndexer {
 
     constructor(eventIndexer: EventIndexer) {
         this.eventIndexer = eventIndexer;
-        this.provider = eventIndexer['provider'];
+        this.provider = eventIndexer["provider"];
         this.state = {
             lastIndexedBlock: ROULETTE_DEPLOYMENT_BLOCK - 1, // Start from deployment block
-            isRunning: false
+            isRunning: false,
         };
     }
 
@@ -39,11 +39,14 @@ export class ContinuousIndexer {
 
         // Load the last indexed block from persistence
         try {
-            const lastIndexedBlock = await this.eventIndexer.getLastIndexedBlock();
+            const lastIndexedBlock =
+                await this.eventIndexer.getLastIndexedBlock();
             this.state.lastIndexedBlock = lastIndexedBlock;
             log.info(`📊 Resumed from block ${lastIndexedBlock}`);
         } catch (error) {
-            log.warn(`⚠️ Could not load last indexed block, starting from deployment: ${error instanceof Error ? error.message : String(error)}`);
+            log.warn(
+                `⚠️ Could not load last indexed block, starting from deployment: ${error instanceof Error ? error.message : String(error)}`,
+            );
         }
 
         // Start the indexing loop
@@ -74,7 +77,10 @@ export class ContinuousIndexer {
         try {
             const latestBlock = await this.provider.getBlockNumber();
             const fromBlock = this.state.lastIndexedBlock + 1;
-            const toBlock = Math.min(fromBlock + this.chunkSize - 1, latestBlock);
+            const toBlock = Math.min(
+                fromBlock + this.chunkSize - 1,
+                latestBlock,
+            );
 
             // Don't index if we're caught up
             if (fromBlock > toBlock) {
@@ -82,7 +88,9 @@ export class ContinuousIndexer {
                 return;
             }
 
-            log.info(`🔄 Indexing blocks ${fromBlock}-${toBlock} (latest: ${latestBlock})`);
+            log.info(
+                `🔄 Indexing blocks ${fromBlock}-${toBlock} (latest: ${latestBlock})`,
+            );
 
             await this.eventIndexer.indexEvents(fromBlock, toBlock);
 
@@ -94,47 +102,58 @@ export class ContinuousIndexer {
             // Persist the last indexed block
             await this.eventIndexer.updateLastIndexedBlock(toBlock);
 
-            log.info(`✅ Indexed blocks ${fromBlock}-${toBlock}. Last indexed: ${toBlock}`);
-
+            log.info(
+                `✅ Indexed blocks ${fromBlock}-${toBlock}. Last indexed: ${toBlock}`,
+            );
         } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
+            const errorMessage =
+                error instanceof Error ? error.message : String(error);
             this.state.lastError = errorMessage;
             this.state.lastRunTime = new Date();
-            
+
             log.error(`❌ Error indexing blocks: ${errorMessage}`);
-            
+
             // Don't throw - let the indexer continue running
         }
     }
 
     async backfillFromBlock(fromBlock: number): Promise<void> {
         log.info(`🔄 Starting backfill from block ${fromBlock}`);
-        
+
         const latestBlock = await this.provider.getBlockNumber();
         const totalBlocks = latestBlock - fromBlock + 1;
-        
-        log.info(`📊 Backfilling ${totalBlocks} blocks from ${fromBlock} to ${latestBlock}`);
+
+        log.info(
+            `📊 Backfilling ${totalBlocks} blocks from ${fromBlock} to ${latestBlock}`,
+        );
 
         let processedBlocks = 0;
         const chunkSize = 100; // Larger chunks for backfill
 
         for (let block = fromBlock; block <= latestBlock; block += chunkSize) {
             const chunkEnd = Math.min(block + chunkSize - 1, latestBlock);
-            
+
             try {
                 log.info(`🔄 Backfilling chunk: blocks ${block}-${chunkEnd}`);
                 await this.eventIndexer.indexEvents(block, chunkEnd);
-                
-                processedBlocks += (chunkEnd - block + 1);
-                const progress = ((processedBlocks / totalBlocks) * 100).toFixed(2);
-                
-                log.info(`✅ Backfill progress: ${progress}% (${processedBlocks}/${totalBlocks} blocks)`);
-                
+
+                processedBlocks += chunkEnd - block + 1;
+                const progress = (
+                    (processedBlocks / totalBlocks) *
+                    100
+                ).toFixed(2);
+
+                log.info(
+                    `✅ Backfill progress: ${progress}% (${processedBlocks}/${totalBlocks} blocks)`,
+                );
+
                 // Small delay to avoid overwhelming RPC
                 await this.delay(100);
-                
             } catch (error) {
-                log.error(`❌ Error backfilling blocks ${block}-${chunkEnd}:`, error instanceof Error ? error.message : String(error));
+                log.error(
+                    `❌ Error backfilling blocks ${block}-${chunkEnd}:`,
+                    error instanceof Error ? error.message : String(error),
+                );
                 throw error;
             }
         }
@@ -158,7 +177,10 @@ export class ContinuousIndexer {
         lastError?: string;
     }> {
         const latestBlock = await this.provider.getBlockNumber();
-        const blocksBehind = Math.max(0, latestBlock - this.state.lastIndexedBlock);
+        const blocksBehind = Math.max(
+            0,
+            latestBlock - this.state.lastIndexedBlock,
+        );
 
         return {
             isRunning: this.state.isRunning,
@@ -166,11 +188,11 @@ export class ContinuousIndexer {
             latestBlock,
             blocksBehind,
             lastRunTime: this.state.lastRunTime,
-            lastError: this.state.lastError
+            lastError: this.state.lastError,
         };
     }
 
     private delay(ms: number): Promise<void> {
-        return new Promise(resolve => setTimeout(resolve, ms));
+        return new Promise((resolve) => setTimeout(resolve, ms));
     }
 }

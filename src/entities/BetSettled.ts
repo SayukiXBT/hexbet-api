@@ -1,4 +1,10 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index } from "typeorm";
+import {
+    Entity,
+    PrimaryGeneratedColumn,
+    Column,
+    CreateDateColumn,
+    Index,
+} from "typeorm";
 
 @Entity("bet_settled")
 @Index(["user", "betIndex"])
@@ -32,4 +38,4 @@ export class BetSettled {
 
     @CreateDateColumn()
     createdAt!: Date;
-} 
+}

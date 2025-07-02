@@ -1,4 +1,10 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index } from "typeorm";
+import {
+    Entity,
+    PrimaryGeneratedColumn,
+    Column,
+    CreateDateColumn,
+    Index,
+} from "typeorm";
 
 @Entity("bet_expired")
 @Index(["betId"])
@@ -27,4 +33,4 @@ export class BetExpired {
 
     @CreateDateColumn()
     createdAt!: Date;
-} 
+}

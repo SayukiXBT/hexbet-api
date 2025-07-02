@@ -15,8 +15,8 @@ export function loadEnv(): void {
     if (notFound.length > 0) {
         console.warn(
             `Required environment variables '${notFound.join(
-                ", "
-            )}' are not set. Please consult the README.`
+                ", ",
+            )}' are not set. Please consult the README.`,
         );
         process.exit(1);
     }
