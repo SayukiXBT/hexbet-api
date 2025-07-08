@@ -15,7 +15,7 @@ export class ContinuousIndexer {
     private provider: ethers.Provider;
     private state: IndexingState;
     private intervalId?: NodeJS.Timeout;
-    private chunkSize: number = 100; // Smaller chunks for continuous indexing
+    private chunkSize: number = 1000; // Smaller chunks for continuous indexing
     private pollingInterval: number = 5000; // 5 seconds
 
     constructor(eventIndexer: EventIndexer) {

@@ -4,7 +4,6 @@ import express from "express";
 import "reflect-metadata";
 import { AppDataSource } from "./config/database";
 import { EventIndexer } from "./services/EventIndexer";
-import { BackfillService } from "./services/BackfillService";
 import { ContinuousIndexer } from "./services/ContinuousIndexer";
 import { ROULETTE_ADDRESS } from "./constants/blockchain";
 
@@ -29,7 +28,6 @@ async function main() {
 
     // Initialize event indexer if RPC URL is provided
     let eventIndexer: EventIndexer | null = null;
-    let backfillService: BackfillService | null = null;
     let continuousIndexer: ContinuousIndexer | null = null;
 
     if (process.env.RPC_URL) {
@@ -50,10 +48,9 @@ async function main() {
         log.info(`Using contract address: ${contractAddress}`);
 
         eventIndexer = new EventIndexer(process.env.RPC_URL, contractAddress);
-        backfillService = new BackfillService(eventIndexer);
         continuousIndexer = new ContinuousIndexer(eventIndexer);
         log.info(
-            `Event indexer, backfill service, and continuous indexer initialized for contract: ${contractAddress}`,
+            `Event indexer and continuous indexer initialized for contract: ${contractAddress}`,
         );
     } else {
         log.warn("RPC_URL not provided - event indexing will be disabled");
@@ -78,237 +75,7 @@ async function main() {
         res.status(200).json({ status: "OK", message: "Server is running" });
     });
 
-    // Index events endpoint
-    app.post("/index-events", async (req, res) => {
-        if (!eventIndexer) {
-            res.status(400).json({
-                error: "Event indexer not configured. Set RPC_URL and CONTRACT_ADDRESS environment variables.",
-            });
-            return;
-        }
-
-        try {
-            const { fromBlock, toBlock } = req.body;
-
-            if (!fromBlock || !toBlock) {
-                res.status(400).json({
-                    error: "fromBlock and toBlock are required",
-                });
-                return;
-            }
-
-            await eventIndexer.indexEvents(
-                parseInt(fromBlock),
-                parseInt(toBlock),
-            );
-            res.json({ success: true, message: "Events indexed successfully" });
-        } catch (error) {
-            log.error(
-                "Error indexing events:",
-                error instanceof Error ? error.message : String(error),
-            );
-            res.status(500).json({ error: "Failed to index events" });
-        }
-    });
-
-    // Get latest block endpoint
-    app.get("/latest-block", async (req, res) => {
-        if (!eventIndexer) {
-            res.status(400).json({
-                error: "Event indexer not configured",
-            });
-            return;
-        }
-
-        try {
-            const latestBlock = await eventIndexer.getLatestBlockNumber();
-            res.json({ latestBlock });
-        } catch (error) {
-            log.error(
-                "Error getting latest block:",
-                error instanceof Error ? error.message : String(error),
-            );
-            res.status(500).json({ error: "Failed to get latest block" });
-        }
-    });
-
-    // Backfill from deployment endpoint
-    app.post("/backfill-from-deployment", async (req, res) => {
-        if (!backfillService) {
-            res.status(400).json({
-                error: "Backfill service not configured",
-            });
-            return;
-        }
-
-        try {
-            // Start backfill in background
-            backfillService.backfillFromDeployment().catch((error) => {
-                log.error(
-                    "Backfill error:",
-                    error instanceof Error ? error.message : String(error),
-                );
-            });
-
-            res.json({
-                success: true,
-                message: "Backfill from deployment started in background",
-            });
-        } catch (error) {
-            log.error(
-                "Error starting backfill:",
-                error instanceof Error ? error.message : String(error),
-            );
-            res.status(500).json({ error: "Failed to start backfill" });
-        }
-    });
-
-    // Backfill recent blocks endpoint
-    app.post("/backfill-recent", async (req, res) => {
-        if (!backfillService) {
-            res.status(400).json({
-                error: "Backfill service not configured",
-            });
-            return;
-        }
-
-        try {
-            const { blocksBack = 1000 } = req.body;
-
-            // Start backfill in background
-            backfillService.backfillRecentBlocks(blocksBack).catch((error) => {
-                log.error(
-                    "Backfill error:",
-                    error instanceof Error ? error.message : String(error),
-                );
-            });
-
-            res.json({
-                success: true,
-                message: `Backfill of recent ${blocksBack} blocks started in background`,
-            });
-        } catch (error) {
-            log.error(
-                "Error starting backfill:",
-                error instanceof Error ? error.message : String(error),
-            );
-            res.status(500).json({ error: "Failed to start backfill" });
-        }
-    });
-
-    // Backfill specific range endpoint
-    app.post("/backfill-range", async (req, res) => {
-        if (!backfillService) {
-            res.status(400).json({
-                error: "Backfill service not configured",
-            });
-            return;
-        }
-
-        try {
-            const { fromBlock, toBlock } = req.body;
-
-            if (!fromBlock || !toBlock) {
-                res.status(400).json({
-                    error: "fromBlock and toBlock are required",
-                });
-                return;
-            }
-
-            // Start backfill in background
-            backfillService
-                .backfillEvents(parseInt(fromBlock), parseInt(toBlock))
-                .catch((error) => {
-                    log.error(
-                        "Backfill error:",
-                        error instanceof Error ? error.message : String(error),
-                    );
-                });
-
-            res.json({
-                success: true,
-                message: `Backfill from block ${fromBlock} to ${toBlock} started in background`,
-            });
-        } catch (error) {
-            log.error(
-                "Error starting backfill:",
-                error instanceof Error ? error.message : String(error),
-            );
-            res.status(500).json({ error: "Failed to start backfill" });
-        }
-    });
-
-    // Test deployment block endpoint
-    app.post("/test-deployment", async (req, res) => {
-        if (!eventIndexer) {
-            res.status(400).json({
-                error: "Event indexer not configured",
-            });
-            return;
-        }
-
-        try {
-            const { ROULETTE_DEPLOYMENT_BLOCK } = await import(
-                "./constants/blockchain"
-            );
-            const testFromBlock = ROULETTE_DEPLOYMENT_BLOCK;
-            const testToBlock = ROULETTE_DEPLOYMENT_BLOCK + 100; // Test 100 blocks after deployment
-
-            log.info(
-                `🧪 Testing deployment block range: ${testFromBlock}-${testToBlock}`,
-            );
-
-            // Test indexing in foreground to see results immediately
-            await eventIndexer.indexEvents(testFromBlock, testToBlock);
-
-            res.json({
-                success: true,
-                message: `Test completed for blocks ${testFromBlock}-${testToBlock}`,
-            });
-        } catch (error) {
-            log.error(
-                "Error testing deployment:",
-                error instanceof Error ? error.message : String(error),
-            );
-            res.status(500).json({ error: "Failed to test deployment" });
-        }
-    });
-
-    // Test recent blocks endpoint
-    app.post("/test-recent", async (req, res) => {
-        if (!eventIndexer) {
-            res.status(400).json({
-                error: "Event indexer not configured",
-            });
-            return;
-        }
-
-        try {
-            const latestBlock = await eventIndexer.getLatestBlockNumber();
-            const testFromBlock = latestBlock - 1000; // Test last 1000 blocks
-            const testToBlock = latestBlock;
-
-            log.info(
-                `🧪 Testing recent block range: ${testFromBlock}-${testToBlock}`,
-            );
-
-            // Test indexing in foreground to see results immediately
-            await eventIndexer.indexEvents(testFromBlock, testToBlock);
-
-            res.json({
-                success: true,
-                message: `Test completed for blocks ${testFromBlock}-${testToBlock}`,
-            });
-        } catch (error) {
-            log.error(
-                "Error testing recent blocks:",
-                error instanceof Error ? error.message : String(error),
-            );
-            res.status(500).json({ error: "Failed to test recent blocks" });
-        }
-    });
-
-    // Continuous indexer control endpoints
+    // Continuous indexer status endpoint
     app.get("/indexer/status", async (req, res) => {
         if (!continuousIndexer) {
             res.status(400).json({
@@ -329,272 +96,37 @@ async function main() {
         }
     });
 
-    app.post("/indexer/start", async (req, res) => {
-        if (!continuousIndexer) {
-            res.status(400).json({
-                error: "Continuous indexer not configured",
-            });
-            return;
-        }
-
-        try {
-            await continuousIndexer.start();
-            res.json({
-                success: true,
-                message: "Continuous indexer started",
-            });
-        } catch (error) {
-            log.error(
-                "Error starting indexer:",
-                error instanceof Error ? error.message : String(error),
-            );
-            res.status(500).json({ error: "Failed to start indexer" });
-        }
-    });
-
-    app.post("/indexer/stop", async (req, res) => {
-        if (!continuousIndexer) {
-            res.status(400).json({
-                error: "Continuous indexer not configured",
-            });
-            return;
-        }
-
-        try {
-            await continuousIndexer.stop();
-            res.json({
-                success: true,
-                message: "Continuous indexer stopped",
-            });
-        } catch (error) {
-            log.error(
-                "Error stopping indexer:",
-                error instanceof Error ? error.message : String(error),
-            );
-            res.status(500).json({ error: "Failed to stop indexer" });
-        }
-    });
-
-    app.post("/indexer/backfill", async (req, res) => {
-        if (!continuousIndexer) {
-            res.status(400).json({
-                error: "Continuous indexer not configured",
-            });
-            return;
-        }
-
-        try {
-            const { fromBlock } = req.body;
-            const { ROULETTE_DEPLOYMENT_BLOCK } = await import(
-                "./constants/blockchain"
-            );
-            const startBlock = fromBlock || ROULETTE_DEPLOYMENT_BLOCK;
-
-            // Start backfill in background
-            continuousIndexer.backfillFromBlock(startBlock).catch((error) => {
-                log.error(
-                    "Backfill error:",
-                    error instanceof Error ? error.message : String(error),
-                );
-            });
-
-            res.json({
-                success: true,
-                message: `Backfill from block ${startBlock} started in background`,
-            });
-        } catch (error) {
-            log.error(
-                "Error starting backfill:",
-                error instanceof Error ? error.message : String(error),
-            );
-            res.status(500).json({ error: "Failed to start backfill" });
-        }
-    });
-
-    // Debug endpoint to test contract connection
-    app.get("/debug/contract", async (req, res) => {
-        if (!eventIndexer) {
-            res.status(400).json({
-                error: "Event indexer not configured",
-            });
-            return;
-        }
-
-        try {
-            const contract = eventIndexer["contract"];
-            const provider = eventIndexer["provider"];
-
-            // Test basic contract calls
-            const latestBlock = await provider.getBlockNumber();
-            const contractAddress = await contract.getAddress();
-
-            // Try to get some basic contract info
-            const { ROULETTE_DEPLOYMENT_BLOCK } = await import(
-                "./constants/blockchain"
-            );
-            const contractInfo: Record<string, unknown> = {
-                address: contractAddress,
-                latestBlock,
-                deploymentBlock: ROULETTE_DEPLOYMENT_BLOCK,
-                provider:
-                    (provider as { connection?: { url: string } }).connection
-                        ?.url || "unknown",
-            };
-
-            // Test if we can call a simple view function
-            try {
-                const bettingToken = await contract.bettingToken();
-                (contractInfo as Record<string, unknown>).bettingToken =
-                    bettingToken;
-            } catch (error) {
-                log.warn(
-                    "Could not call bettingToken():",
-                    error instanceof Error ? error.message : String(error),
-                );
-            }
-
-            res.json({
-                success: true,
-                contractInfo,
-                message: "Contract connection test completed",
-            });
-        } catch (error) {
-            log.error(
-                "Error testing contract:",
-                error instanceof Error ? error.message : String(error),
-            );
-            res.status(500).json({
-                error: "Failed to test contract",
-                details: error instanceof Error ? error.message : String(error),
-            });
-        }
-    });
-
-    // Spin endpoints
-    app.get("/api/spins", async (req, res) => {
-        try {
-            const { user, targetBlock, limit = 50, offset = 0 } = req.query;
-
-            const spinRepository = AppDataSource.getRepository("Spin");
-            let query = spinRepository.createQueryBuilder("spin");
-
-            if (user) {
-                query = query.where("spin.user = :user", { user });
-            }
-
-            if (targetBlock) {
-                query = query.andWhere("spin.targetBlock = :targetBlock", {
-                    targetBlock,
-                });
-            }
-
-            const spins = await query
-                .orderBy("spin.createdAt", "DESC")
-                .limit(Number(limit))
-                .offset(Number(offset))
-                .getMany();
-
-            res.json({
-                success: true,
-                spins,
-                count: spins.length,
-            });
-        } catch (error) {
-            log.error(
-                "Error fetching spins:",
-                error instanceof Error ? error.message : String(error),
-            );
-            res.status(500).json({ error: "Failed to fetch spins" });
-        }
-    });
-
-    app.get("/api/spins/:id", async (req, res) => {
-        try {
-            const { id } = req.params;
-            const spinRepository = AppDataSource.getRepository("Spin");
-
-            const spin = await spinRepository.findOne({
-                where: { id: Number(id) },
-            });
-
-            if (!spin) {
-                res.status(404).json({ error: "Spin not found" });
-                return;
-            }
-
-            res.json({
-                success: true,
-                spin,
-            });
-        } catch (error) {
-            log.error(
-                "Error fetching spin:",
-                error instanceof Error ? error.message : String(error),
-            );
-            res.status(500).json({ error: "Failed to fetch spin" });
-        }
-    });
-
-    app.get("/api/spins/user/:user", async (req, res) => {
-        try {
-            const { user } = req.params;
-            const { limit = 50, offset = 0 } = req.query;
-
-            const spinRepository = AppDataSource.getRepository("Spin");
-            const spins = await spinRepository.find({
-                where: { user },
-                order: { createdAt: "DESC" },
-                take: Number(limit),
-                skip: Number(offset),
-            });
-
-            res.json({
-                success: true,
-                spins,
-                count: spins.length,
-            });
-        } catch (error) {
-            log.error(
-                "Error fetching user spins:",
-                error instanceof Error ? error.message : String(error),
-            );
-            res.status(500).json({ error: "Failed to fetch user spins" });
-        }
-    });
-
-    app.get("/api/spins/target/:targetBlock", async (req, res) => {
-        try {
-            const { targetBlock } = req.params;
-            const { limit = 50, offset = 0 } = req.query;
-
-            const spinRepository = AppDataSource.getRepository("Spin");
-            const spins = await spinRepository.find({
-                where: { targetBlock },
-                order: { createdAt: "DESC" },
-                take: Number(limit),
-                skip: Number(offset),
-            });
-
-            res.json({
-                success: true,
-                spins,
-                count: spins.length,
-            });
-        } catch (error) {
-            log.error(
-                "Error fetching target block spins:",
-                error instanceof Error ? error.message : String(error),
-            );
-            res.status(500).json({
-                error: "Failed to fetch target block spins",
-            });
-        }
-    });
-
-    // Start server
+    // Start the server
     app.listen(PORT, () => {
-        log.info(`Server is running on port ${PORT}`);
+        log.info(`🚀 Server is running on port ${PORT}`);
+        log.info(`📊 Health check: http://localhost:${PORT}/status`);
+        log.info(`📊 Indexer status: http://localhost:${PORT}/indexer/status`);
     });
 }
 
-main();
+// Handle graceful shutdown
+process.on("SIGINT", async () => {
+    log.info("🛑 Received SIGINT, shutting down gracefully...");
+    process.exit(0);
+});
+
+process.on("SIGTERM", async () => {
+    log.info("🛑 Received SIGTERM, shutting down gracefully...");
+    process.exit(0);
+});
+
+// Handle unhandled promise rejections
+process.on("unhandledRejection", (reason, promise) => {
+    log.error("Unhandled Rejection at:", String(promise), "reason:", String(reason));
+});
+
+// Handle uncaught exceptions
+process.on("uncaughtException", (error) => {
+    log.error("Uncaught Exception:", error);
+    process.exit(1);
+});
+
+main().catch((error) => {
+    log.error("Failed to start server:", error);
+    process.exit(1);
+});
