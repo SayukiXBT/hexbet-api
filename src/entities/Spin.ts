@@ -27,6 +27,9 @@ export class Spin {
     @Column({ type: "boolean", default: false })
     isSettled!: boolean; // whether this spin has been settled
 
+    @Column({ type: "boolean", default: false })
+    isExpired!: boolean; // whether this spin has expired (past target block)
+
     @Column({ type: "boolean", nullable: true })
     won!: boolean | null; // true if any bet in the spin won
 

@@ -84,26 +84,40 @@ export class ContinuousIndexer {
                 return;
             }
 
-            // When caught up, index from the next block to the latest block
-            const toBlock = latestBlock;
+            // Use chunking to process blocks in smaller batches
+            let currentBlock = fromBlock;
+            let totalProcessed = 0;
 
-            log.info(
-                `🔄 Indexing blocks ${fromBlock}-${toBlock} (latest: ${latestBlock})`,
-            );
+            while (currentBlock <= latestBlock) {
+                const chunkEnd = Math.min(currentBlock + this.chunkSize - 1, latestBlock);
 
-            await this.eventIndexer.indexEvents(fromBlock, toBlock);
+                log.info(
+                    `🔄 Indexing chunk: blocks ${currentBlock}-${chunkEnd} (latest: ${latestBlock})`,
+                );
 
-            // Update state
-            this.state.lastIndexedBlock = toBlock;
-            this.state.lastRunTime = new Date();
-            this.state.lastError = undefined;
+                await this.eventIndexer.indexEvents(currentBlock, chunkEnd);
 
-            // Persist the last indexed block
-            await this.eventIndexer.updateLastIndexedBlock(toBlock);
+                // Update state after each chunk
+                this.state.lastIndexedBlock = chunkEnd;
+                this.state.lastRunTime = new Date();
+                this.state.lastError = undefined;
 
-            log.info(
-                `✅ Indexed blocks ${fromBlock}-${toBlock}. Last indexed: ${toBlock}`,
-            );
+                // Persist the last indexed block
+                await this.eventIndexer.updateLastIndexedBlock(chunkEnd);
+
+                totalProcessed += chunkEnd - currentBlock + 1;
+                log.info(
+                    `✅ Indexed chunk ${currentBlock}-${chunkEnd}. Total processed: ${totalProcessed}. Last indexed: ${chunkEnd}`,
+                );
+
+                // Move to next chunk
+                currentBlock = chunkEnd + 1;
+
+                // Small delay between chunks to avoid overwhelming RPC
+                if (currentBlock <= latestBlock) {
+                    await this.delay(100);
+                }
+            }
         } catch (error) {
             const errorMessage =
                 error instanceof Error ? error.message : String(error);

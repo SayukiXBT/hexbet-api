@@ -2,6 +2,7 @@ import { ethers } from "ethers";
 import { AppDataSource } from "../config/database";
 import { BetPlaced } from "../entities/BetPlaced";
 import { BetSettled } from "../entities/BetSettled";
+import { Spin } from "../entities/Spin";
 import { log } from "@sayukixbt/log";
 
 export class BetSettlementMonitor {
@@ -12,6 +13,7 @@ export class BetSettlementMonitor {
     private isRunning: boolean = false;
     private betPlacedRepository = AppDataSource.getRepository(BetPlaced);
     private betSettledRepository = AppDataSource.getRepository(BetSettled);
+    private spinRepository = AppDataSource.getRepository(Spin);
     private monitoringInterval: number = 10000; // 10 seconds
     private settlementThreshold: number = 100;
 
@@ -71,6 +73,9 @@ export class BetSettlementMonitor {
         try {
             const currentBlock = await this.provider.getBlockNumber();
             const expirationBlock = currentBlock - 256; // Blockhash expires after 256 blocks
+
+            // Update expired spins first
+            await this.updateExpiredSpins(currentBlock);
 
             // Find users with unsettled bets that are approaching expiration
             const usersWithUnsettledBets = await this.betPlacedRepository
@@ -313,6 +318,36 @@ export class BetSettlementMonitor {
             unsettledBetsCount,
             approachingExpirationCount,
         };
+    }
+
+    private async updateExpiredSpins(currentBlock: number): Promise<void> {
+        try {
+            // Find spins that have expired (target block is >256 blocks in the past), not settled, and not already marked as expired
+            const expiredSpins = await this.spinRepository
+                .createQueryBuilder("spin")
+                .where("spin.isSettled = :isSettled", { isSettled: false })
+                .andWhere("spin.isExpired = :isExpired", { isExpired: false })
+                .andWhere("CAST(spin.targetBlock AS INTEGER) + 256 < :currentBlock", { currentBlock })
+                .getMany();
+
+            if (expiredSpins.length > 0) {
+                log.info(`⏰ Found ${expiredSpins.length} expired spins to update`);
+
+                for (const spin of expiredSpins) {
+                    spin.isExpired = true;
+                    spin.updatedAt = new Date();
+                    await this.spinRepository.save(spin);
+                    log.debug(`⏰ Marked spin as expired for user ${spin.user} target block ${spin.targetBlock}`);
+                }
+
+                log.info(`✅ Updated ${expiredSpins.length} spins as expired`);
+            }
+        } catch (error) {
+            log.error(
+                "❌ Error updating expired spins:",
+                error instanceof Error ? error.message : String(error),
+            );
+        }
     }
 
     private delay(ms: number): Promise<void> {

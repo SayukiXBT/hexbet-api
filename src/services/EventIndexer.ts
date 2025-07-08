@@ -312,9 +312,17 @@ export class EventIndexer {
             }
 
             // Add this bet to the spin
-            spin.betIndexes.push(betIndex);
-            spin.guesses.push(guess);
-            spin.wagers.push(wager);
+            const guessIndex = spin.guesses.findIndex(g => g === guess);
+            if (guessIndex !== -1) {
+                // Already have a bet for this guess, sum the wager
+                spin.wagers[guessIndex] = (BigInt(spin.wagers[guessIndex]) + BigInt(wager)).toString();
+                // Optionally, you may want to update betIndexes as well, or keep only the first
+            } else {
+                // New guess for this spin
+                spin.betIndexes.push(betIndex);
+                spin.guesses.push(guess);
+                spin.wagers.push(wager);
+            }
 
             // Update total wager
             const currentTotal = BigInt(spin.totalWager);

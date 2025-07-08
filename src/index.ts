@@ -3,6 +3,7 @@ import { loadEnv } from "./utils/loadEnv";
 import express from "express";
 import { createServer } from "http";
 import { Server as SocketIOServer } from "socket.io";
+import cors from "cors";
 import "reflect-metadata";
 import { AppDataSource } from "./config/database";
 import { EventIndexer } from "./services/EventIndexer";
@@ -111,6 +112,11 @@ async function main() {
     }
 
     // Middleware
+    app.use(cors({
+        origin: true, // Allow all origins
+        methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        credentials: false,
+    }));
     app.use(express.json());
 
     // Start continuous indexer automatically
