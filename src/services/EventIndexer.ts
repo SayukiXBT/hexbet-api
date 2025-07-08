@@ -24,8 +24,10 @@ export class EventIndexer {
     private chunkSize: number = 100; // Use 100 blocks per chunk for all queries
     private maxRetries: number = 5;
     private baseDelay: number = 1000; // 1 second base delay
+    private onNewSpin?: (spin: Spin) => void; // Callback for new spin events
+    private onSpinUpdated?: (spin: Spin) => void; // Callback for spin update events
 
-    constructor(rpcUrl: string, contractAddress: string = ROULETTE_ADDRESS) {
+    constructor(rpcUrl: string, contractAddress: string = ROULETTE_ADDRESS, onNewSpin?: (spin: Spin) => void, onSpinUpdated?: (spin: Spin) => void) {
         log.info(`🔗 Initializing EventIndexer with RPC: ${rpcUrl}`);
         this.provider = new ethers.JsonRpcProvider(rpcUrl);
         this.contract = new ethers.Contract(
@@ -33,6 +35,8 @@ export class EventIndexer {
             rouletteABI.abi,
             this.provider,
         );
+        this.onNewSpin = onNewSpin;
+        this.onSpinUpdated = onSpinUpdated;
         log.info(`EventIndexer initialized for contract: ${contractAddress}`);
 
         // Test the connection
@@ -319,6 +323,11 @@ export class EventIndexer {
             log.debug(
                 `🔄 Updated spin for user ${user} target block ${targetBlock} - total wager: ${spin.totalWager}`,
             );
+
+            // Trigger callback for new spin if provided
+            if (this.onNewSpin) {
+                this.onNewSpin(spin);
+            }
         } catch (error) {
             log.error(
                 `❌ Error updating spin from BetPlaced:`,
@@ -377,6 +386,11 @@ export class EventIndexer {
                 log.debug(
                     `🎯 Updated spin settlement for user ${user} target block ${betPlaced.targetBlock} - won: ${won}, payout: ${payout}`,
                 );
+
+                // Trigger callback for spin update if provided
+                if (this.onSpinUpdated) {
+                    this.onSpinUpdated(spin);
+                }
             } else {
                 log.warn(
                     `⚠️ Could not find spin for settled bet: user ${user}, bet index ${betIndex}, target block ${betPlaced.targetBlock}`,

@@ -1,6 +1,8 @@
 import { log } from "@sayukixbt/log";
 import { loadEnv } from "./utils/loadEnv";
 import express from "express";
+import { createServer } from "http";
+import { Server as SocketIOServer } from "socket.io";
 import "reflect-metadata";
 import { AppDataSource } from "./config/database";
 import { EventIndexer } from "./services/EventIndexer";
@@ -15,6 +17,14 @@ loadEnv();
 
 async function main() {
     const app = express();
+    const server = createServer(app);
+    const io = new SocketIOServer(server, {
+        cors: {
+            origin: true, // Allow all origins but handle properly
+            methods: ["GET", "POST", "OPTIONS"],
+            credentials: false
+        }
+    });
     const PORT = process.env.PORT || 3000;
 
     // Initialize database connection
@@ -28,6 +38,26 @@ async function main() {
         );
         process.exit(1);
     }
+
+    // Function to broadcast new spins to subscribed clients
+    const broadcastNewSpin = (spin: Spin) => {
+        const roomName = `spins:${spin.user.toLowerCase()}`;
+        io.to(roomName).emit("new:spin", {
+            address: spin.user.toLowerCase(),
+            spin: spin
+        });
+        log.info(`📡 Broadcasted new spin to room: ${roomName}`);
+    };
+
+    // Function to broadcast spin updates to subscribed clients
+    const broadcastSpinUpdate = (spin: Spin) => {
+        const roomName = `spins:${spin.user.toLowerCase()}`;
+        io.to(roomName).emit("spin:updated", {
+            address: spin.user.toLowerCase(),
+            spin: spin
+        });
+        log.info(`📡 Broadcasted spin update to room: ${roomName}`);
+    };
 
     // Initialize event indexer if RPC URL is provided
     let eventIndexer: EventIndexer | null = null;
@@ -51,7 +81,7 @@ async function main() {
 
         log.info(`Using contract address: ${contractAddress}`);
 
-        eventIndexer = new EventIndexer(process.env.RPC_URL, contractAddress);
+        eventIndexer = new EventIndexer(process.env.RPC_URL, contractAddress, broadcastNewSpin, broadcastSpinUpdate);
         continuousIndexer = new ContinuousIndexer(eventIndexer);
         log.info(
             `Event indexer and continuous indexer initialized for contract: ${contractAddress}`,
@@ -99,6 +129,43 @@ async function main() {
             );
         });
     }
+
+    // WebSocket connection handling
+    io.on("connection", (socket) => {
+        log.info(`🔌 WebSocket client connected: ${socket.id}`);
+
+        // Handle subscription to user spins
+        socket.on("subscribe:spins", (data: { address: string }) => {
+            const { address } = data;
+            
+            if (!address || !/^0x[a-fA-F0-9]{40}$/.test(address)) {
+                socket.emit("error", { message: "Invalid address format" });
+                return;
+            }
+
+            const roomName = `spins:${address.toLowerCase()}`;
+            socket.join(roomName);
+            log.info(`📡 Client ${socket.id} subscribed to spins for ${address}`);
+            
+            socket.emit("subscribed", { 
+                address: address.toLowerCase(),
+                room: roomName 
+            });
+        });
+
+        // Handle unsubscription
+        socket.on("unsubscribe:spins", (data: { address: string }) => {
+            const { address } = data;
+            const roomName = `spins:${address.toLowerCase()}`;
+            socket.leave(roomName);
+            log.info(`📡 Client ${socket.id} unsubscribed from spins for ${address}`);
+        });
+
+        // Handle disconnect
+        socket.on("disconnect", () => {
+            log.info(`🔌 WebSocket client disconnected: ${socket.id}`);
+        });
+    });
 
     // Status endpoint
     app.get("/status", (req, res) => {
@@ -214,10 +281,11 @@ async function main() {
     });
 
     // Start the server
-    app.listen(PORT, () => {
+    server.listen(PORT, () => {
         log.info(`🚀 Server is running on port ${PORT}`);
         log.info(`📊 Health check: http://localhost:${PORT}/status`);
         log.info(`📊 Indexer status: http://localhost:${PORT}/indexer/status`);
+        log.info(`🔌 WebSocket server ready on ws://localhost:${PORT}`);
     });
 }
 
