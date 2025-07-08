@@ -27,7 +27,12 @@ export class EventIndexer {
     private onNewSpin?: (spin: Spin) => void; // Callback for new spin events
     private onSpinUpdated?: (spin: Spin) => void; // Callback for spin update events
 
-    constructor(rpcUrl: string, contractAddress: string = ROULETTE_ADDRESS, onNewSpin?: (spin: Spin) => void, onSpinUpdated?: (spin: Spin) => void) {
+    constructor(
+        rpcUrl: string,
+        contractAddress: string = ROULETTE_ADDRESS,
+        onNewSpin?: (spin: Spin) => void,
+        onSpinUpdated?: (spin: Spin) => void,
+    ) {
         log.info(`🔗 Initializing EventIndexer with RPC: ${rpcUrl}`);
         this.provider = new ethers.JsonRpcProvider(rpcUrl);
         this.contract = new ethers.Contract(

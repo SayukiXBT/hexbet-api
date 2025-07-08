@@ -22,8 +22,8 @@ async function main() {
         cors: {
             origin: true, // Allow all origins but handle properly
             methods: ["GET", "POST", "OPTIONS"],
-            credentials: false
-        }
+            credentials: false,
+        },
     });
     const PORT = process.env.PORT || 3000;
 
@@ -44,7 +44,7 @@ async function main() {
         const roomName = `spins:${spin.user.toLowerCase()}`;
         io.to(roomName).emit("new:spin", {
             address: spin.user.toLowerCase(),
-            spin: spin
+            spin: spin,
         });
         log.info(`📡 Broadcasted new spin to room: ${roomName}`);
     };
@@ -54,7 +54,7 @@ async function main() {
         const roomName = `spins:${spin.user.toLowerCase()}`;
         io.to(roomName).emit("spin:updated", {
             address: spin.user.toLowerCase(),
-            spin: spin
+            spin: spin,
         });
         log.info(`📡 Broadcasted spin update to room: ${roomName}`);
     };
@@ -81,7 +81,12 @@ async function main() {
 
         log.info(`Using contract address: ${contractAddress}`);
 
-        eventIndexer = new EventIndexer(process.env.RPC_URL, contractAddress, broadcastNewSpin, broadcastSpinUpdate);
+        eventIndexer = new EventIndexer(
+            process.env.RPC_URL,
+            contractAddress,
+            broadcastNewSpin,
+            broadcastSpinUpdate,
+        );
         continuousIndexer = new ContinuousIndexer(eventIndexer);
         log.info(
             `Event indexer and continuous indexer initialized for contract: ${contractAddress}`,
@@ -137,7 +142,7 @@ async function main() {
         // Handle subscription to user spins
         socket.on("subscribe:spins", (data: { address: string }) => {
             const { address } = data;
-            
+
             if (!address || !/^0x[a-fA-F0-9]{40}$/.test(address)) {
                 socket.emit("error", { message: "Invalid address format" });
                 return;
@@ -145,11 +150,13 @@ async function main() {
 
             const roomName = `spins:${address.toLowerCase()}`;
             socket.join(roomName);
-            log.info(`📡 Client ${socket.id} subscribed to spins for ${address}`);
-            
-            socket.emit("subscribed", { 
+            log.info(
+                `📡 Client ${socket.id} subscribed to spins for ${address}`,
+            );
+
+            socket.emit("subscribed", {
                 address: address.toLowerCase(),
-                room: roomName 
+                room: roomName,
             });
         });
 
@@ -158,7 +165,9 @@ async function main() {
             const { address } = data;
             const roomName = `spins:${address.toLowerCase()}`;
             socket.leave(roomName);
-            log.info(`📡 Client ${socket.id} unsubscribed from spins for ${address}`);
+            log.info(
+                `📡 Client ${socket.id} unsubscribed from spins for ${address}`,
+            );
         });
 
         // Handle disconnect
