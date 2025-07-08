@@ -550,6 +550,12 @@ export class EventIndexer {
                     lastError.message.includes("Request timeout") ||
                     (lastError as any).code === 30;
 
+                // Check if it's an "Unknown block" error (code 26)
+                const isUnknownBlock =
+                    (lastError as any).code === 26 ||
+                    lastError.message.includes("Unknown block") ||
+                    lastError.message.includes("unknown block");
+
                 if (isTimeout && attempt < this.maxRetries) {
                     const delay = this.baseDelay * Math.pow(2, attempt - 1);
                     log.warn(
@@ -559,7 +565,17 @@ export class EventIndexer {
                     continue;
                 }
 
-                // For non-timeout errors or max retries reached, throw immediately
+                // For "Unknown block" errors, retry with longer delays as the RPC might be catching up
+                if (isUnknownBlock && attempt < this.maxRetries) {
+                    const delay = this.baseDelay * Math.pow(3, attempt - 1); // Longer delays for unknown block errors
+                    log.warn(
+                        `🔍 Unknown block error on attempt ${attempt}, RPC might be catching up. Retrying in ${delay}ms...`,
+                    );
+                    await this.delay(delay);
+                    continue;
+                }
+
+                // For non-retryable errors or max retries reached, throw immediately
                 throw lastError;
             }
         }

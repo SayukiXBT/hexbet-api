@@ -16,7 +16,7 @@ export class ContinuousIndexer {
     private state: IndexingState;
     private intervalId?: NodeJS.Timeout;
     private chunkSize: number = 1000; // Smaller chunks for continuous indexing
-    private pollingInterval: number = 5000; // 5 seconds
+    private pollingInterval: number = 3000; // 800ms polling interval
 
     constructor(eventIndexer: EventIndexer) {
         this.eventIndexer = eventIndexer;
@@ -77,16 +77,15 @@ export class ContinuousIndexer {
         try {
             const latestBlock = await this.provider.getBlockNumber();
             const fromBlock = this.state.lastIndexedBlock + 1;
-            const toBlock = Math.min(
-                fromBlock + this.chunkSize - 1,
-                latestBlock,
-            );
 
             // Don't index if we're caught up
-            if (fromBlock > toBlock) {
+            if (fromBlock > latestBlock) {
                 log.debug(`📊 Caught up to latest block ${latestBlock}`);
                 return;
             }
+
+            // When caught up, index from the next block to the latest block
+            const toBlock = latestBlock;
 
             log.info(
                 `🔄 Indexing blocks ${fromBlock}-${toBlock} (latest: ${latestBlock})`,

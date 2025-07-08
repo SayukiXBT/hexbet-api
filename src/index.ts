@@ -5,7 +5,10 @@ import "reflect-metadata";
 import { AppDataSource } from "./config/database";
 import { EventIndexer } from "./services/EventIndexer";
 import { ContinuousIndexer } from "./services/ContinuousIndexer";
+import { BetSettlementMonitor } from "./services/BetSettlementMonitor";
 import { ROULETTE_ADDRESS } from "./constants/blockchain";
+import { Spin } from "./entities/Spin";
+import rouletteABI from "./abi/Roulette.json";
 
 // load the environment variables
 loadEnv();
@@ -29,6 +32,7 @@ async function main() {
     // Initialize event indexer if RPC URL is provided
     let eventIndexer: EventIndexer | null = null;
     let continuousIndexer: ContinuousIndexer | null = null;
+    let betSettlementMonitor: BetSettlementMonitor | null = null;
 
     if (process.env.RPC_URL) {
         log.info(`RPC_URL: ${process.env.RPC_URL}`);
@@ -52,6 +56,21 @@ async function main() {
         log.info(
             `Event indexer and continuous indexer initialized for contract: ${contractAddress}`,
         );
+
+        // Initialize bet settlement monitor if private key is provided
+        if (process.env.PRIVATE_KEY) {
+            betSettlementMonitor = new BetSettlementMonitor(
+                process.env.RPC_URL,
+                contractAddress,
+                process.env.PRIVATE_KEY,
+                rouletteABI,
+            );
+            log.info("Bet settlement monitor initialized");
+        } else {
+            log.warn(
+                "PRIVATE_KEY not provided - bet settlement monitoring will be disabled",
+            );
+        }
     } else {
         log.warn("RPC_URL not provided - event indexing will be disabled");
     }
@@ -65,6 +84,17 @@ async function main() {
         continuousIndexer.start().catch((error) => {
             log.error(
                 "Failed to start continuous indexer:",
+                error instanceof Error ? error.message : String(error),
+            );
+        });
+    }
+
+    // Start bet settlement monitor automatically
+    if (betSettlementMonitor) {
+        log.info("🚀 Starting bet settlement monitor automatically...");
+        betSettlementMonitor.start().catch((error) => {
+            log.error(
+                "Failed to start bet settlement monitor:",
                 error instanceof Error ? error.message : String(error),
             );
         });
@@ -96,6 +126,93 @@ async function main() {
         }
     });
 
+    // Bet settlement monitor status endpoint
+    app.get("/settlement/status", async (req, res) => {
+        if (!betSettlementMonitor) {
+            res.status(400).json({
+                error: "Bet settlement monitor not configured",
+            });
+            return;
+        }
+
+        try {
+            const status = await betSettlementMonitor.getStatus();
+            res.json(status);
+        } catch (error) {
+            log.error(
+                "Error getting settlement monitor status:",
+                error instanceof Error ? error.message : String(error),
+            );
+            res.status(500).json({
+                error: "Failed to get settlement monitor status",
+            });
+        }
+    });
+
+    // Get all spins for a specific address
+    app.get("/spins/:address", async (req, res) => {
+        try {
+            const { address } = req.params;
+            const { offset = "0", limit = "50" } = req.query;
+
+            // Validate address format
+            if (!address || !/^0x[a-fA-F0-9]{40}$/.test(address)) {
+                res.status(400).json({ error: "Invalid address format" });
+                return;
+            }
+
+            // Validate pagination parameters
+            const offsetNum = parseInt(offset as string);
+            const limitNum = parseInt(limit as string);
+
+            if (isNaN(offsetNum) || offsetNum < 0) {
+                res.status(400).json({ error: "Invalid offset parameter" });
+                return;
+            }
+
+            if (isNaN(limitNum) || limitNum < 1 || limitNum > 100) {
+                res.status(400).json({
+                    error: "Invalid limit parameter (must be between 1 and 100)",
+                });
+                return;
+            }
+
+            const spinRepository = AppDataSource.getRepository(Spin);
+
+            // Get total count for pagination info
+            const totalCount = await spinRepository
+                .createQueryBuilder("spin")
+                .where("LOWER(spin.user) = LOWER(:address)", { address })
+                .getCount();
+
+            // Use case-insensitive query with pagination
+            const spins = await spinRepository
+                .createQueryBuilder("spin")
+                .where("LOWER(spin.user) = LOWER(:address)", { address })
+                .orderBy("spin.createdAt", "DESC")
+                .offset(offsetNum)
+                .limit(limitNum)
+                .getMany();
+
+            res.json({
+                address: address.toLowerCase(),
+                pagination: {
+                    offset: offsetNum,
+                    limit: limitNum,
+                    total: totalCount,
+                    hasMore: offsetNum + limitNum < totalCount,
+                },
+                spins: spins,
+            });
+        } catch (error) {
+            log.error(
+                "Error getting spins for address:",
+                error instanceof Error ? error.message : String(error),
+            );
+            res.status(500).json({ error: "Failed to get spins" });
+        }
+    });
+
     // Start the server
     app.listen(PORT, () => {
         log.info(`🚀 Server is running on port ${PORT}`);
@@ -117,7 +234,12 @@ process.on("SIGTERM", async () => {
 
 // Handle unhandled promise rejections
 process.on("unhandledRejection", (reason, promise) => {
-    log.error("Unhandled Rejection at:", String(promise), "reason:", String(reason));
+    log.error(
+        "Unhandled Rejection at:",
+        String(promise),
+        "reason:",
+        String(reason),
+    );
 });
 
 // Handle uncaught exceptions
