@@ -69,6 +69,23 @@ async function main() {
         log.info(`📡 Broadcasted new block: ${blockNumber}`);
     };
 
+    // Function to broadcast manual bet settlement to all connected clients
+    const broadcastManualSettlement = (settlementData: {
+        user: string;
+        betIndices: string[];
+        transactionHash: string;
+        blockNumber: number;
+        success: boolean;
+    }) => {
+        io.emit("bet:manually-settled", {
+            ...settlementData,
+            timestamp: new Date().toISOString(),
+        });
+        log.info(
+            `📡 Broadcasted manual settlement for user ${settlementData.user}: ${settlementData.success ? "SUCCESS" : "FAILED"}`,
+        );
+    };
+
     // Initialize event indexer if RPC URL is provided
     let eventIndexer: EventIndexer | null = null;
     let continuousIndexer: ContinuousIndexer | null = null;
@@ -112,6 +129,7 @@ async function main() {
                 contractAddress,
                 process.env.PRIVATE_KEY,
                 rouletteABI,
+                broadcastManualSettlement,
             );
             log.info("Bet settlement monitor initialized");
         } else {

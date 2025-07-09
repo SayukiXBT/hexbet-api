@@ -14,12 +14,26 @@ export class BetSettlementMonitor {
     private betSettledRepository = AppDataSource.getRepository(BetSettled);
     private monitoringInterval: number = 10000; // 10 seconds
     private settlementThreshold: number = 100;
+    private onManualSettlement?: (settlementData: {
+        user: string;
+        betIndices: string[];
+        transactionHash: string;
+        blockNumber: number;
+        success: boolean;
+    }) => void;
 
     constructor(
         rpcUrl: string,
         contractAddress: string,
         privateKey: string,
-        private rouletteABI: any,
+        private rouletteABI: { abi: ethers.InterfaceAbi },
+        onManualSettlement?: (settlementData: {
+            user: string;
+            betIndices: string[];
+            transactionHash: string;
+            blockNumber: number;
+            success: boolean;
+        }) => void,
     ) {
         this.provider = new ethers.JsonRpcProvider(rpcUrl);
         this.wallet = new ethers.Wallet(privateKey, this.provider);
@@ -28,6 +42,7 @@ export class BetSettlementMonitor {
             rouletteABI.abi,
             this.wallet,
         );
+        this.onManualSettlement = onManualSettlement;
 
         log.info(
             `🔍 BetSettlementMonitor initialized for contract: ${contractAddress}`,
@@ -189,8 +204,30 @@ export class BetSettlementMonitor {
 
                 // Update our database to mark all bets as settled
                 await this.markSpinAsSettled(unsettledBets, receipt);
+
+                // Trigger manual settlement callback
+                if (this.onManualSettlement) {
+                    this.onManualSettlement({
+                        user,
+                        betIndices: betIndices,
+                        transactionHash: receipt.hash,
+                        blockNumber: receipt.blockNumber,
+                        success: true,
+                    });
+                }
             } else {
                 log.error(`❌ Settlement transaction failed for user ${user}`);
+
+                // Trigger manual settlement callback for failed settlement
+                if (this.onManualSettlement) {
+                    this.onManualSettlement({
+                        user,
+                        betIndices: betIndices,
+                        transactionHash: receipt.hash,
+                        blockNumber: receipt.blockNumber,
+                        success: false,
+                    });
+                }
             }
         } catch (error) {
             log.error(
@@ -202,7 +239,7 @@ export class BetSettlementMonitor {
 
     private async markSpinAsSettled(
         bets: BetPlaced[],
-        receipt: any,
+        receipt: ethers.TransactionReceipt,
     ): Promise<void> {
         try {
             // Validate receipt has required fields
@@ -214,7 +251,7 @@ export class BetSettlementMonitor {
             }
 
             // Find all BetSettled events in the receipt
-            const settlementEvents = receipt.logs.filter((log: any) => {
+            const settlementEvents = receipt.logs.filter((log: ethers.Log) => {
                 try {
                     const parsedLog = this.contract.interface.parseLog(log);
                     return parsedLog?.name === "BetSettled";
