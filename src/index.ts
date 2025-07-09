@@ -60,6 +60,15 @@ async function main() {
         log.info(`📡 Broadcasted spin update to room: ${roomName}`);
     };
 
+    // Function to broadcast new block height to all connected clients
+    const broadcastNewBlock = (blockNumber: number) => {
+        io.emit("block:new", {
+            blockNumber: blockNumber,
+            timestamp: new Date().toISOString(),
+        });
+        log.info(`📡 Broadcasted new block: ${blockNumber}`);
+    };
+
     // Initialize event indexer if RPC URL is provided
     let eventIndexer: EventIndexer | null = null;
     let continuousIndexer: ContinuousIndexer | null = null;
@@ -88,7 +97,10 @@ async function main() {
             broadcastNewSpin,
             broadcastSpinUpdate,
         );
-        continuousIndexer = new ContinuousIndexer(eventIndexer);
+        continuousIndexer = new ContinuousIndexer(
+            eventIndexer,
+            broadcastNewBlock,
+        );
         log.info(
             `Event indexer and continuous indexer initialized for contract: ${contractAddress}`,
         );
@@ -407,10 +419,10 @@ async function main() {
                             spin.isExpired = true;
                             spin.updatedAt = new Date();
                             await spinRepository.save(spin);
-                            
+
                             // Broadcast the spin update to subscribed clients
                             broadcastSpinUpdate(spin);
-                            
+
                             updatedCount++;
 
                             results.push({

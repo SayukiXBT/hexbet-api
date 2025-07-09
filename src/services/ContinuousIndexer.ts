@@ -17,10 +17,16 @@ export class ContinuousIndexer {
     private intervalId?: NodeJS.Timeout;
     private chunkSize: number = 1000; // Smaller chunks for continuous indexing
     private pollingInterval: number = 3000; // 800ms polling interval
+    private onNewBlock?: (blockNumber: number) => void;
+    private lastBroadcastedBlock: number = 0;
 
-    constructor(eventIndexer: EventIndexer) {
+    constructor(
+        eventIndexer: EventIndexer,
+        onNewBlock?: (blockNumber: number) => void,
+    ) {
         this.eventIndexer = eventIndexer;
         this.provider = eventIndexer["provider"];
+        this.onNewBlock = onNewBlock;
         this.state = {
             lastIndexedBlock: ROULETTE_DEPLOYMENT_BLOCK - 1, // Start from deployment block
             isRunning: false,
@@ -77,6 +83,12 @@ export class ContinuousIndexer {
         try {
             const latestBlock = await this.provider.getBlockNumber();
             const fromBlock = this.state.lastIndexedBlock + 1;
+
+            // Broadcast new block if we have a callback and it's a new block
+            if (this.onNewBlock && latestBlock > this.lastBroadcastedBlock) {
+                this.lastBroadcastedBlock = latestBlock;
+                this.onNewBlock(latestBlock);
+            }
 
             // Don't index if we're caught up
             if (fromBlock > latestBlock) {
