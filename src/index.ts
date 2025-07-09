@@ -112,11 +112,13 @@ async function main() {
     }
 
     // Middleware
-    app.use(cors({
-        origin: true, // Allow all origins
-        methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        credentials: false,
-    }));
+    app.use(
+        cors({
+            origin: true, // Allow all origins
+            methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            credentials: false,
+        }),
+    );
     app.use(express.json());
 
     // Start continuous indexer automatically
@@ -292,6 +294,176 @@ async function main() {
                 error instanceof Error ? error.message : String(error),
             );
             res.status(500).json({ error: "Failed to get spins" });
+        }
+    });
+
+    // Get a specific spin by address and targetBlock
+    app.get("/spins/:address/:targetBlock", async (req, res) => {
+        try {
+            const { address, targetBlock } = req.params;
+
+            // Validate address format
+            if (!address || !/^0x[a-fA-F0-9]{40}$/.test(address)) {
+                res.status(400).json({ error: "Invalid address format" });
+                return;
+            }
+
+            // Validate targetBlock format (should be a number)
+            if (!targetBlock || isNaN(parseInt(targetBlock))) {
+                res.status(400).json({
+                    error: "Invalid targetBlock parameter",
+                });
+                return;
+            }
+
+            const spinRepository = AppDataSource.getRepository(Spin);
+
+            // Find the specific spin
+            const spin = await spinRepository
+                .createQueryBuilder("spin")
+                .where("LOWER(spin.user) = LOWER(:address)", { address })
+                .andWhere("spin.targetBlock = :targetBlock", { targetBlock })
+                .getOne();
+
+            if (!spin) {
+                res.status(404).json({
+                    error: "Spin not found",
+                    address: address.toLowerCase(),
+                    targetBlock: targetBlock,
+                });
+                return;
+            }
+
+            res.json({
+                address: address.toLowerCase(),
+                targetBlock: targetBlock,
+                spin: spin,
+            });
+        } catch (error) {
+            log.error(
+                "Error getting specific spin:",
+                error instanceof Error ? error.message : String(error),
+            );
+            res.status(500).json({ error: "Failed to get spin" });
+        }
+    });
+
+    // Manual endpoint to check and update expired spins with on-chain verification
+    app.post("/admin/check-expired-spins", async (req, res) => {
+        try {
+            if (!eventIndexer) {
+                res.status(400).json({ error: "Event indexer not available" });
+                return;
+            }
+
+            // Get current block
+            const currentBlock = await eventIndexer.getLatestBlockNumber();
+
+            const spinRepository = AppDataSource.getRepository(Spin);
+
+            // Find all spins that should be expired
+            const expiredSpins = await spinRepository
+                .createQueryBuilder("spin")
+                .where("spin.isExpired = :isExpired", { isExpired: false })
+                .andWhere(
+                    "CAST(spin.targetBlock AS INTEGER) + 256 < :currentBlock",
+                    { currentBlock },
+                )
+                .getMany();
+
+            if (expiredSpins.length === 0) {
+                res.json({
+                    message: "No expired spins found",
+                    currentBlock: currentBlock,
+                    checkedSpins: 0,
+                    updatedSpins: 0,
+                });
+                return;
+            }
+
+            // Check each spin on-chain and update if actually expired
+            let updatedCount = 0;
+            const results = [];
+
+            for (const spin of expiredSpins) {
+                try {
+                    // Use the first bet index from the spin to check expiration status on-chain
+                    if (spin.betIndexes.length > 0) {
+                        const betIndex = spin.betIndexes[0];
+
+                        // Use retry logic for the on-chain call
+                        const betInfo = await eventIndexer["retryWithBackoff"](
+                            async () => {
+                                return await eventIndexer[
+                                    "contract"
+                                ].getUserBet(spin.user, betIndex);
+                            },
+                        );
+
+                        // betInfo.isExpired is the 8th field in the getUserBet return tuple
+                        const isExpiredOnChain = betInfo[7]; // isExpired field
+
+                        if (isExpiredOnChain) {
+                            spin.isExpired = true;
+                            spin.updatedAt = new Date();
+                            await spinRepository.save(spin);
+                            updatedCount++;
+
+                            results.push({
+                                user: spin.user,
+                                targetBlock: spin.targetBlock,
+                                isSettled: spin.isSettled,
+                                isExpiredOnChain: true,
+                                updated: true,
+                            });
+                        } else {
+                            results.push({
+                                user: spin.user,
+                                targetBlock: spin.targetBlock,
+                                isSettled: spin.isSettled,
+                                isExpiredOnChain: false,
+                                updated: false,
+                            });
+                        }
+                    } else {
+                        results.push({
+                            user: spin.user,
+                            targetBlock: spin.targetBlock,
+                            isSettled: spin.isSettled,
+                            error: "No bet indexes found",
+                            updated: false,
+                        });
+                    }
+
+                    // Small delay to avoid overwhelming RPC
+                    await new Promise((resolve) => setTimeout(resolve, 100));
+                } catch (error) {
+                    results.push({
+                        user: spin.user,
+                        targetBlock: spin.targetBlock,
+                        isSettled: spin.isSettled,
+                        error:
+                            error instanceof Error
+                                ? error.message
+                                : String(error),
+                        updated: false,
+                    });
+                }
+            }
+
+            res.json({
+                message: `Checked ${expiredSpins.length} spins, updated ${updatedCount} as expired`,
+                currentBlock: currentBlock,
+                checkedSpins: expiredSpins.length,
+                updatedSpins: updatedCount,
+                results: results,
+            });
+        } catch (error) {
+            log.error(
+                "Error checking expired spins:",
+                error instanceof Error ? error.message : String(error),
+            );
+            res.status(500).json({ error: "Failed to check expired spins" });
         }
     });
 

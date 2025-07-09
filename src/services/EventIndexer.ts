@@ -21,7 +21,7 @@ export class EventIndexer {
     private winningsClaimedRepository =
         AppDataSource.getRepository(WinningsClaimed);
     private spinRepository = AppDataSource.getRepository(Spin);
-    private chunkSize: number = 100; // Use 100 blocks per chunk for all queries
+    private chunkSize: number = 10; // Reduced from 100 to avoid DRPC batch limits
     private maxRetries: number = 5;
     private baseDelay: number = 1000; // 1 second base delay
     private onNewSpin?: (spin: Spin) => void; // Callback for new spin events
@@ -54,15 +54,19 @@ export class EventIndexer {
 
             // Index BetPlaced events
             await this.indexBetPlacedEvents(fromBlock, toBlock);
+            await this.delay(500); // Increased delay to prevent batching
 
             // Index BetSettled events
             await this.indexBetSettledEvents(fromBlock, toBlock);
+            await this.delay(500); // Increased delay to prevent batching
 
             // Index BetExpired events
             await this.indexBetExpiredEvents(fromBlock, toBlock);
+            await this.delay(500); // Increased delay to prevent batching
 
             // Index WinningsClaimed events
             await this.indexWinningsClaimedEvents(fromBlock, toBlock);
+            await this.delay(500); // Increased delay to prevent batching
 
             log.info(
                 `Successfully indexed events from block ${fromBlock} to ${toBlock}`,
@@ -97,13 +101,26 @@ export class EventIndexer {
 
             // Log first few events for debugging
             if (events.length > 0) {
-                log.info(events);
+                // log.info(events);
+            }
+
+            // Group events by transactionHash
+            const eventsByTx: Record<string, any[]> = {};
+            for (const event of events) {
+                if ("args" in event && event.args) {
+                    const tx = event.transactionHash;
+                    if (!eventsByTx[tx]) eventsByTx[tx] = [];
+                    eventsByTx[tx].push(event);
+                }
             }
 
             let indexedCount = 0;
-            for (const event of events) {
-                if ("args" in event && event.args) {
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            for (const tx in eventsByTx) {
+                const txEvents = eventsByTx[tx];
+                let spin: Spin | null = null;
+                let spinUser = null;
+                let spinTargetBlock = null;
+                for (const event of txEvents) {
                     const args = event.args as any;
                     const existing = await this.betPlacedRepository.findOne({
                         where: {
@@ -125,9 +142,10 @@ export class EventIndexer {
 
                         await this.betPlacedRepository.save(betPlaced);
 
-                        // Update or create spin record
-                        await this.updateSpinFromBetPlaced(args);
-
+                        // Update or create spin record, but suppress emit
+                        spin = await this.updateSpinFromBetPlaced(args, true);
+                        spinUser = args.user;
+                        spinTargetBlock = args.targetBlock.toString();
                         indexedCount++;
                         log.info(
                             `✅ Indexed BetPlaced event: User ${args.user} bet ${args.betIndex} guess ${args.guess.toString()} for ${args.wager.toString()} tokens`,
@@ -137,6 +155,10 @@ export class EventIndexer {
                             `⏭️  Skipped existing BetPlaced event: ${event.transactionHash}`,
                         );
                     }
+                }
+                // After all events for this tx, emit new:spin ONCE if spin was created/updated
+                if (spin && spinUser && spinTargetBlock) {
+                    if (this.onNewSpin) this.onNewSpin(spin);
                 }
             }
 
@@ -240,9 +262,12 @@ export class EventIndexer {
                     betExpired.blockNumber = event.blockNumber;
 
                     await this.betExpiredRepository.save(betExpired);
-                    log.debug(
+                    log.info(
                         `⏰ Indexed BetExpired event: User ${args.user} bet ${args.betId} type ${args.betType.toString()} expired - Refund: ${args.amount.toString()} tokens`,
                     );
+
+                    // Update the corresponding spin to mark it as expired
+                    await this.updateSpinFromBetExpired(args);
                 }
             }
         }
@@ -287,7 +312,10 @@ export class EventIndexer {
     }
 
     // Spin management methods
-    private async updateSpinFromBetPlaced(args: any): Promise<void> {
+    private async updateSpinFromBetPlaced(
+        args: any,
+        suppressEmit: boolean = false,
+    ): Promise<Spin | null> {
         try {
             const user = args.user;
             const targetBlock = args.targetBlock.toString();
@@ -295,12 +323,14 @@ export class EventIndexer {
             const guess = args.guess.toString();
             const wager = args.wager.toString();
 
-            // Find existing spin or create new one
+            // Use a more robust approach to handle race conditions
+            // First try to find existing spin
             let spin = await this.spinRepository.findOne({
                 where: { user, targetBlock },
             });
 
             if (!spin) {
+                // Create new spin
                 spin = new Spin();
                 spin.user = user;
                 spin.targetBlock = targetBlock;
@@ -312,11 +342,12 @@ export class EventIndexer {
             }
 
             // Add this bet to the spin
-            const guessIndex = spin.guesses.findIndex(g => g === guess);
+            const guessIndex = spin.guesses.findIndex((g) => g === guess);
             if (guessIndex !== -1) {
                 // Already have a bet for this guess, sum the wager
-                spin.wagers[guessIndex] = (BigInt(spin.wagers[guessIndex]) + BigInt(wager)).toString();
-                // Optionally, you may want to update betIndexes as well, or keep only the first
+                spin.wagers[guessIndex] = (
+                    BigInt(spin.wagers[guessIndex]) + BigInt(wager)
+                ).toString();
             } else {
                 // New guess for this spin
                 spin.betIndexes.push(betIndex);
@@ -332,18 +363,125 @@ export class EventIndexer {
             // Update timestamp
             spin.updatedAt = new Date();
 
-            await this.spinRepository.save(spin);
+            // Use a try-catch approach to handle the unique constraint
+            let savedSpin: Spin;
+            try {
+                savedSpin = await this.spinRepository.save(spin);
+            } catch (saveError) {
+                // If save fails due to unique constraint, try to find and update the existing spin
+                if (
+                    saveError instanceof Error &&
+                    saveError.message.includes("UNIQUE constraint failed")
+                ) {
+                    log.debug(
+                        `🔄 Spin already exists, updating existing spin for user ${user} target block ${targetBlock}`,
+                    );
+
+                    // Find the existing spin and update it
+                    const existingSpin = await this.spinRepository.findOne({
+                        where: { user, targetBlock },
+                    });
+
+                    if (existingSpin) {
+                        // Update the existing spin with the new bet
+                        const guessIndex = existingSpin.guesses.findIndex(
+                            (g) => g === guess,
+                        );
+                        if (guessIndex !== -1) {
+                            existingSpin.wagers[guessIndex] = (
+                                BigInt(existingSpin.wagers[guessIndex]) +
+                                BigInt(wager)
+                            ).toString();
+                        } else {
+                            existingSpin.betIndexes.push(betIndex);
+                            existingSpin.guesses.push(guess);
+                            existingSpin.wagers.push(wager);
+                        }
+
+                        existingSpin.totalWager = (
+                            BigInt(existingSpin.totalWager) + BigInt(wager)
+                        ).toString();
+                        existingSpin.updatedAt = new Date();
+
+                        savedSpin =
+                            await this.spinRepository.save(existingSpin);
+                    } else {
+                        throw saveError; // Re-throw if we can't find the existing spin
+                    }
+                } else {
+                    throw saveError; // Re-throw if it's not a unique constraint error
+                }
+            }
+
             log.debug(
-                `🔄 Updated spin for user ${user} target block ${targetBlock} - total wager: ${spin.totalWager}`,
+                `🔄 Updated spin for user ${user} target block ${targetBlock} - total wager: ${savedSpin.totalWager}`,
             );
 
             // Trigger callback for new spin if provided
-            if (this.onNewSpin) {
-                this.onNewSpin(spin);
+            if (!suppressEmit && this.onNewSpin) {
+                this.onNewSpin(savedSpin);
             }
+
+            return savedSpin;
         } catch (error) {
             log.error(
                 `❌ Error updating spin from BetPlaced:`,
+                error instanceof Error ? error.message : String(error),
+            );
+            return null;
+        }
+    }
+
+    private async updateSpinFromBetExpired(args: any): Promise<void> {
+        try {
+            const user = args.user;
+            const betId = args.betId.toString();
+
+            // Find the BetPlaced event to get the target block
+            const betPlaced = await this.betPlacedRepository.findOne({
+                where: {
+                    user,
+                    betIndex: betId,
+                },
+            });
+
+            if (!betPlaced) {
+                log.warn(
+                    `⚠️ Could not find BetPlaced event for expired bet ${betId} by user ${user}`,
+                );
+                return;
+            }
+
+            const targetBlock = betPlaced.targetBlock;
+
+            // Find the corresponding spin
+            const spin = await this.spinRepository.findOne({
+                where: { user, targetBlock },
+            });
+
+            if (!spin) {
+                log.warn(
+                    `⚠️ Could not find spin for expired bet ${betId} by user ${user} target block ${targetBlock}`,
+                );
+                return;
+            }
+
+            // Mark the spin as expired
+            spin.isExpired = true;
+            spin.updatedAt = new Date();
+            await this.spinRepository.save(spin);
+
+            log.info(
+                `⏰ Marked spin as expired for user ${user} target block ${targetBlock} due to BetExpired event for bet ${betId}`,
+            );
+
+            // Trigger callback for spin update if provided
+            if (this.onSpinUpdated) {
+                this.onSpinUpdated(spin);
+            }
+        } catch (error) {
+            log.error(
+                `❌ Error updating spin from BetExpired:`,
                 error instanceof Error ? error.message : String(error),
             );
         }

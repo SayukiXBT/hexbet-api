@@ -89,7 +89,10 @@ export class ContinuousIndexer {
             let totalProcessed = 0;
 
             while (currentBlock <= latestBlock) {
-                const chunkEnd = Math.min(currentBlock + this.chunkSize - 1, latestBlock);
+                const chunkEnd = Math.min(
+                    currentBlock + this.chunkSize - 1,
+                    latestBlock,
+                );
 
                 log.info(
                     `🔄 Indexing chunk: blocks ${currentBlock}-${chunkEnd} (latest: ${latestBlock})`,
