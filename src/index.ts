@@ -407,6 +407,10 @@ async function main() {
                             spin.isExpired = true;
                             spin.updatedAt = new Date();
                             await spinRepository.save(spin);
+                            
+                            // Broadcast the spin update to subscribed clients
+                            broadcastSpinUpdate(spin);
+                            
                             updatedCount++;
 
                             results.push({
