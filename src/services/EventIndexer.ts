@@ -342,7 +342,6 @@ export class EventIndexer {
         );
 
         try {
-            // Get the appropriate provider for this block range
             const provider = await this.dualProvider.getProviderForBlockRange(
                 fromBlock,
                 toBlock,
@@ -655,29 +654,17 @@ export class EventIndexer {
             log.info("🔍 Testing RPC connections...");
             await this.dualProvider.testConnections();
 
-            // Test querying all events from the contract
-            log.info("🔍 Testing event querying...");
+            // Test getting latest block number from both providers
+            log.info("🔍 Testing block height queries...");
             const latestBlock = await this.dualProvider.getLatestBlockNumber();
-            const allEvents = await this.contract.queryFilter(
-                "*",
-                latestBlock - 100,
-                latestBlock,
-            );
-            log.info(
-                `📊 Found ${allEvents.length} total events in last 100 blocks`,
-            );
-
-            if (allEvents.length > 0) {
-                const firstEvent = allEvents[0];
-                log.info(`📋 Sample event:`, {
-                    name:
-                        "eventName" in firstEvent
-                            ? firstEvent.eventName
-                            : "unknown",
-                    blockNumber: firstEvent.blockNumber,
-                    transactionHash: firstEvent.transactionHash,
-                });
-            }
+            log.info(`📊 Latest block number: ${latestBlock}`);
+            
+            // Test getting a recent block to ensure connectivity
+            const provider = await this.dualProvider.getProviderForBlock(latestBlock - 10);
+            const recentBlock = await provider.getBlock(latestBlock - 10);
+            log.info(`📋 Recent block ${recentBlock?.number} hash: ${recentBlock?.hash?.slice(0, 10)}...`);
+            
+            log.info("✅ RPC connection test successful!");
         } catch (error) {
             log.error(
                 `❌ RPC connection failed:`,

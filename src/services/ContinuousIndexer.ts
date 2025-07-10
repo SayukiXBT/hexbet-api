@@ -16,9 +16,13 @@ export class ContinuousIndexer {
     private state: IndexingState;
     private intervalId?: NodeJS.Timeout;
     private chunkSize: number = 1000; // Smaller chunks for continuous indexing
-    private pollingInterval: number = 100; // 100ms polling interval
+    private catchupPollingInterval: number = 1000; // 1000ms when catching up
+    private localPollingInterval: number = 100; // 100ms when caught up
     private onNewBlock?: (blockNumber: number) => void;
     private lastBroadcastedBlock: number = 0;
+    private isCatchingUp: boolean = true; // Track if we're in catchup mode
+    private currentPollingInterval: number = 1000; // Track the actual current interval
+    private catchupThreshold: number = 40; // Use 40 blocks to avoid "Unknown block" errors from local RPC
 
     constructor(
         eventIndexer: EventIndexer,
@@ -55,10 +59,10 @@ export class ContinuousIndexer {
             );
         }
 
-        // Start the indexing loop
+        // Start the indexing loop with catchup interval
         this.intervalId = setInterval(async () => {
             await this.indexNewBlocks();
-        }, this.pollingInterval);
+        }, this.catchupPollingInterval);
 
         // Do initial indexing
         await this.indexNewBlocks();
@@ -79,6 +83,26 @@ export class ContinuousIndexer {
         }
     }
 
+    private updatePollingInterval(): void {
+        if (!this.intervalId) return;
+
+        const newInterval = this.isCatchingUp ? this.catchupPollingInterval : this.localPollingInterval;
+        
+        log.info(`🔧 updatePollingInterval: current=${this.currentPollingInterval}ms, new=${newInterval}ms, isCatchingUp=${this.isCatchingUp}`);
+        
+        if (this.currentPollingInterval !== newInterval) {
+            log.info(`🔄 Updating polling interval: ${this.currentPollingInterval}ms → ${newInterval}ms (${this.isCatchingUp ? 'catching up' : 'caught up'})`);
+            
+            // Clear the old interval and create a new one
+            clearInterval(this.intervalId);
+            this.intervalId = setInterval(async () => {
+                await this.indexNewBlocks();
+            }, newInterval);
+            
+            this.currentPollingInterval = newInterval;
+        }
+    }
+
     private async indexNewBlocks(): Promise<void> {
         try {
             const latestBlock = await this.provider.getBlockNumber();
@@ -90,9 +114,21 @@ export class ContinuousIndexer {
                 this.onNewBlock(latestBlock);
             }
 
+            // Check if we're caught up (within threshold of latest block)
+            const wasCatchingUp = this.isCatchingUp;
+            const blocksBehind = latestBlock - fromBlock + 1;
+            this.isCatchingUp = blocksBehind > this.catchupThreshold;
+            
+            log.info(`🔍 Catchup check: fromBlock=${fromBlock}, latestBlock=${latestBlock}, blocksBehind=${blocksBehind}, isCatchingUp=${this.isCatchingUp}, wasCatchingUp=${wasCatchingUp}`);
+            
+            // Update polling interval if catchup status changed
+            if (wasCatchingUp !== this.isCatchingUp) {
+                this.updatePollingInterval();
+            }
+            
             // Don't index if we're caught up
             if (fromBlock > latestBlock) {
-                log.debug(`📊 Caught up to latest block ${latestBlock}`);
+                log.info(`📊 Caught up to latest block ${latestBlock}`);
                 return;
             }
 
@@ -203,6 +239,8 @@ export class ContinuousIndexer {
         blocksBehind: number;
         lastRunTime?: Date;
         lastError?: string;
+        isCatchingUp: boolean;
+        pollingInterval: number;
     }> {
         const latestBlock = await this.provider.getBlockNumber();
         const blocksBehind = Math.max(
@@ -217,6 +255,8 @@ export class ContinuousIndexer {
             blocksBehind,
             lastRunTime: this.state.lastRunTime,
             lastError: this.state.lastError,
+            isCatchingUp: this.isCatchingUp,
+            pollingInterval: this.currentPollingInterval,
         };
     }
 
