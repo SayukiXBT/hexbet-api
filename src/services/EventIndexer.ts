@@ -27,6 +27,8 @@ export class EventIndexer {
     private baseDelay: number = 1000; // 1 second base delay
     private onNewSpin?: (spin: Spin) => void; // Callback for new spin events
     private onSpinUpdated?: (spin: Spin) => void; // Callback for spin update events
+    private lastProcessedRange: { fromBlock: number; toBlock: number } | null =
+        null; // Track last processed range
 
     constructor(
         archiveRpcUrl: string,
@@ -54,23 +56,56 @@ export class EventIndexer {
     }
 
     async indexEvents(fromBlock: number, toBlock: number) {
+        // Prevent processing the same block range multiple times
+        if (
+            this.lastProcessedRange &&
+            this.lastProcessedRange.fromBlock === fromBlock &&
+            this.lastProcessedRange.toBlock === toBlock
+        ) {
+            log.debug(
+                `⏭️ Skipping duplicate block range ${fromBlock}-${toBlock}`,
+            );
+            return;
+        }
+
+        this.lastProcessedRange = { fromBlock, toBlock };
+
+        // Map key: user:targetBlock, value: Spin
+        const updatedSpins: Map<string, Spin> = new Map();
+        const newSpins: Set<string> = new Set(); // Track newly created spins
+        const registerSpin = (spin: Spin, isNew: boolean = false) => {
+            const key = `${spin.user.toLowerCase()}:${spin.targetBlock}`;
+            updatedSpins.set(key, spin);
+            if (isNew) {
+                newSpins.add(key);
+            }
+        };
         try {
-            // Index BetPlaced events
-            await this.indexBetPlacedEvents(fromBlock, toBlock);
-            // Index BetSettled events
-            await this.indexBetSettledEvents(fromBlock, toBlock);
-            // Index BetExpired events
-            await this.indexBetExpiredEvents(fromBlock, toBlock);
-            // Index WinningsClaimed events
+            await this.indexBetPlacedEvents(fromBlock, toBlock, registerSpin);
+            await this.indexBetSettledEvents(fromBlock, toBlock, registerSpin);
+            await this.indexBetExpiredEvents(fromBlock, toBlock, registerSpin);
             await this.indexWinningsClaimedEvents(fromBlock, toBlock);
+            // Emit all updated spins after processing the block range
+            for (const [key, spin] of updatedSpins) {
+                if (newSpins.has(key) && this.onNewSpin) {
+                    log.info(`📡 Emitting new:spin for ${key}`);
+                    this.onNewSpin(spin);
+                } else if (!newSpins.has(key) && this.onSpinUpdated) {
+                    log.info(`📡 Emitting spin:updated for ${key}`);
+                    this.onSpinUpdated(spin);
+                }
+            }
         } catch (error) {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             log.error("Error indexing events:", error as any);
             throw error;
         }
     }
 
-    private async indexBetPlacedEvents(fromBlock: number, toBlock: number) {
+    private async indexBetPlacedEvents(
+        fromBlock: number,
+        toBlock: number,
+        registerSpin: (spin: Spin, isNew: boolean) => void,
+    ) {
         try {
             // Get the appropriate provider for this block range
             const provider = await this.dualProvider.getProviderForBlockRange(
@@ -113,11 +148,14 @@ export class EventIndexer {
             }
 
             let indexedCount = 0;
+            // Track spins by target block to avoid multiple emissions
+            const spinsByTargetBlock: Map<
+                string,
+                { spin: Spin; isNew: boolean }
+            > = new Map();
+
             for (const tx in eventsByTx) {
                 const txEvents = eventsByTx[tx];
-                let spin: Spin | null = null;
-                let spinUser = null;
-                let spinTargetBlock = null;
                 for (const event of txEvents) {
                     const args = event.args as any;
                     const existing = await this.betPlacedRepository.findOne({
@@ -141,21 +179,42 @@ export class EventIndexer {
                         await this.betPlacedRepository.save(betPlaced);
 
                         // Update or create spin record, but suppress emit
-                        spin = await this.updateSpinFromBetPlaced(args, true);
-                        spinUser = args.user;
-                        spinTargetBlock = args.targetBlock.toString();
+                        const spinResult =
+                            await this.updateSpinFromBetPlaced(args); // always suppress emit here
+                        if (spinResult) {
+                            const key = `${args.user.toLowerCase()}:${args.targetBlock.toString()}`;
+                            // If this target block already exists in our map, preserve the "new" status
+                            const existingSpinData =
+                                spinsByTargetBlock.get(key);
+                            // Only mark as "not new" if we already had a spin in our map AND the spinResult says it's not new
+                            // This means the spin existed in the database before this batch
+                            const isNew = existingSpinData
+                                ? existingSpinData.isNew
+                                : spinResult.isNew;
+                            spinsByTargetBlock.set(key, {
+                                spin: spinResult.spin,
+                                isNew,
+                            });
+                            log.info(
+                                `🔍 Target block ${args.targetBlock} for user ${args.user}: existing=${!!existingSpinData}, spinResult.isNew=${spinResult.isNew}, final isNew=${isNew}`,
+                            );
+                        }
                         indexedCount++;
                         log.info(
                             `🎯 Indexed BetPlaced: User ${args.user} bet ${args.betIndex} guess ${args.guess.toString()} for ${args.wager.toString()} tokens`,
                         );
                     } else {
-                                            // Skip existing events silently
+                        // Skip existing events silently
                     }
                 }
-                // After all events for this tx, emit new:spin ONCE if spin was created/updated
-                if (spin && spinUser && spinTargetBlock) {
-                    if (this.onNewSpin) this.onNewSpin(spin);
-                }
+            }
+
+            // Register spins only once per target block after all bets are processed
+            for (const [key, spinResult] of spinsByTargetBlock) {
+                log.info(
+                    `📡 Registering spin for ${key}: isNew=${spinResult.isNew}`,
+                );
+                registerSpin(spinResult.spin, spinResult.isNew);
             }
 
             if (indexedCount > 0) {
@@ -170,7 +229,11 @@ export class EventIndexer {
         }
     }
 
-    private async indexBetSettledEvents(fromBlock: number, toBlock: number) {
+    private async indexBetSettledEvents(
+        fromBlock: number,
+        toBlock: number,
+        registerSpin: (spin: Spin, isNew: boolean) => void,
+    ) {
         try {
             // Get the appropriate provider for this block range
             const provider = await this.dualProvider.getProviderForBlockRange(
@@ -224,6 +287,23 @@ export class EventIndexer {
 
                         // Update spin record with settlement info
                         await this.updateSpinFromBetSettled(args, event);
+                        // Find the spin and register it if updated
+                        const betPlaced =
+                            await this.betPlacedRepository.findOne({
+                                where: {
+                                    user: args.user,
+                                    betIndex: args.betIndex.toString(),
+                                },
+                            });
+                        if (betPlaced) {
+                            const spin = await this.spinRepository.findOne({
+                                where: {
+                                    user: args.user,
+                                    targetBlock: betPlaced.targetBlock,
+                                },
+                            });
+                            if (spin) registerSpin(spin, false);
+                        }
 
                         indexedCount++;
                         const result = args.won ? "WON" : "LOST";
@@ -248,7 +328,11 @@ export class EventIndexer {
         }
     }
 
-    private async indexBetExpiredEvents(fromBlock: number, toBlock: number) {
+    private async indexBetExpiredEvents(
+        fromBlock: number,
+        toBlock: number,
+        registerSpin: (spin: Spin, isNew: boolean) => void,
+    ) {
         try {
             // Get the appropriate provider for this block range
             const provider = await this.dualProvider.getProviderForBlockRange(
@@ -296,6 +380,23 @@ export class EventIndexer {
 
                         // Update the corresponding spin to mark it as expired
                         await this.updateSpinFromBetExpired(args);
+                        // Find the spin and register it if updated
+                        const betPlaced =
+                            await this.betPlacedRepository.findOne({
+                                where: {
+                                    user: args.user,
+                                    betIndex: args.betId.toString(),
+                                },
+                            });
+                        if (betPlaced) {
+                            const spin = await this.spinRepository.findOne({
+                                where: {
+                                    user: args.user,
+                                    targetBlock: betPlaced.targetBlock,
+                                },
+                            });
+                            if (spin) registerSpin(spin, false);
+                        }
                     }
                 }
             }
@@ -311,6 +412,7 @@ export class EventIndexer {
     private async indexWinningsClaimedEvents(
         fromBlock: number,
         toBlock: number,
+        // registerSpin: (spin: Spin) => void, // Remove unused param
     ) {
         try {
             const provider = await this.dualProvider.getProviderForBlockRange(
@@ -371,8 +473,7 @@ export class EventIndexer {
     // Spin management methods
     private async updateSpinFromBetPlaced(
         args: any,
-        suppressEmit: boolean = false,
-    ): Promise<Spin | null> {
+    ): Promise<{ spin: Spin; isNew: boolean } | null> {
         try {
             const user = args.user;
             const targetBlock = args.targetBlock.toString();
@@ -385,6 +486,8 @@ export class EventIndexer {
             let spin = await this.spinRepository.findOne({
                 where: { user, targetBlock },
             });
+
+            const isNew = !spin; // Track if this is a new spin
 
             if (!spin) {
                 // Create new spin
@@ -474,12 +577,7 @@ export class EventIndexer {
                 `🔄 Updated spin for user ${user} target block ${targetBlock} - total wager: ${savedSpin.totalWager}`,
             );
 
-            // Trigger callback for new spin if provided
-            if (!suppressEmit && this.onNewSpin) {
-                this.onNewSpin(savedSpin);
-            }
-
-            return savedSpin;
+            return { spin: savedSpin, isNew };
         } catch (error) {
             log.error(
                 `❌ Error updating spin from BetPlaced:`,
@@ -532,10 +630,7 @@ export class EventIndexer {
                 `⏰ Marked spin as expired for user ${user} target block ${targetBlock} due to BetExpired event for bet ${betId}`,
             );
 
-            // Trigger callback for spin update if provided
-            if (this.onSpinUpdated) {
-                this.onSpinUpdated(spin);
-            }
+            // Remove the onSpinUpdated call - will be handled by batching
         } catch (error) {
             log.error(
                 `❌ Error updating spin from BetExpired:`,
@@ -582,23 +677,34 @@ export class EventIndexer {
             if (spin) {
                 // Update spin with settlement info
                 spin.isSettled = true;
-                spin.won = won;
+
+                // Aggregate win/loss status: if any bet won, the spin is won
+                if (spin.won === null || spin.won === false) {
+                    spin.won = won;
+                } else {
+                    // If already marked as won, keep it won (any bet winning makes the spin a win)
+                    spin.won = true;
+                }
+
+                // Set hex values (should be the same for all bets in the spin)
                 spin.firstHex = firstHex;
                 spin.secondHex = secondHex;
-                spin.totalPayout = payout;
+
+                // Aggregate payouts: add this bet's payout to the total
+                const currentPayout = BigInt(spin.totalPayout || "0");
+                const newPayout = BigInt(payout);
+                spin.totalPayout = (currentPayout + newPayout).toString();
+
                 spin.settlementTransactionHash = event.transactionHash;
                 spin.settlementBlockNumber = event.blockNumber;
                 spin.updatedAt = new Date();
 
                 await this.spinRepository.save(spin);
-                log.debug(
-                    `🎯 Updated spin settlement for user ${user} target block ${betPlaced.targetBlock} - won: ${won}, payout: ${payout}`,
+                log.info(
+                    `🎯 Updated spin settlement for user ${user} target block ${betPlaced.targetBlock} - bet ${betIndex} won: ${won}, payout: ${payout}, total spin won: ${spin.won}, total payout: ${spin.totalPayout}`,
                 );
 
-                // Trigger callback for spin update if provided
-                if (this.onSpinUpdated) {
-                    this.onSpinUpdated(spin);
-                }
+                // Remove the onSpinUpdated call - will be handled by batching
             } else {
                 log.warn(
                     `⚠️ Could not find spin for settled bet: user ${user}, bet index ${betIndex}, target block ${betPlaced.targetBlock}`,
@@ -629,12 +735,16 @@ export class EventIndexer {
             log.info("🔍 Testing block height queries...");
             const latestBlock = await this.dualProvider.getLatestBlockNumber();
             log.info(`📊 Latest block number: ${latestBlock}`);
-            
+
             // Test getting a recent block to ensure connectivity
-            const provider = await this.dualProvider.getProviderForBlock(latestBlock - 10);
+            const provider = await this.dualProvider.getProviderForBlock(
+                latestBlock - 10,
+            );
             const recentBlock = await provider.getBlock(latestBlock - 10);
-            log.info(`📋 Recent block ${recentBlock?.number} hash: ${recentBlock?.hash?.slice(0, 10)}...`);
-            
+            log.info(
+                `📋 Recent block ${recentBlock?.number} hash: ${recentBlock?.hash?.slice(0, 10)}...`,
+            );
+
             log.info("✅ RPC connection test successful!");
         } catch (error) {
             log.error(

@@ -86,19 +86,25 @@ export class ContinuousIndexer {
     private updatePollingInterval(): void {
         if (!this.intervalId) return;
 
-        const newInterval = this.isCatchingUp ? this.catchupPollingInterval : this.localPollingInterval;
-        
-        log.info(`🔧 updatePollingInterval: current=${this.currentPollingInterval}ms, new=${newInterval}ms, isCatchingUp=${this.isCatchingUp}`);
-        
+        const newInterval = this.isCatchingUp
+            ? this.catchupPollingInterval
+            : this.localPollingInterval;
+
+        log.info(
+            `🔧 updatePollingInterval: current=${this.currentPollingInterval}ms, new=${newInterval}ms, isCatchingUp=${this.isCatchingUp}`,
+        );
+
         if (this.currentPollingInterval !== newInterval) {
-            log.info(`🔄 Updating polling interval: ${this.currentPollingInterval}ms → ${newInterval}ms (${this.isCatchingUp ? 'catching up' : 'caught up'})`);
-            
+            log.info(
+                `🔄 Updating polling interval: ${this.currentPollingInterval}ms → ${newInterval}ms (${this.isCatchingUp ? "catching up" : "caught up"})`,
+            );
+
             // Clear the old interval and create a new one
             clearInterval(this.intervalId);
             this.intervalId = setInterval(async () => {
                 await this.indexNewBlocks();
             }, newInterval);
-            
+
             this.currentPollingInterval = newInterval;
         }
     }
@@ -118,17 +124,19 @@ export class ContinuousIndexer {
             const wasCatchingUp = this.isCatchingUp;
             const blocksBehind = latestBlock - fromBlock + 1;
             this.isCatchingUp = blocksBehind > this.catchupThreshold;
-            
+
             // Only log catchup status changes
             if (wasCatchingUp !== this.isCatchingUp) {
-                log.info(`🔄 Catchup status changed: ${wasCatchingUp ? 'catching up' : 'caught up'} → ${this.isCatchingUp ? 'catching up' : 'caught up'} (blocks behind: ${blocksBehind})`);
+                log.info(
+                    `🔄 Catchup status changed: ${wasCatchingUp ? "catching up" : "caught up"} → ${this.isCatchingUp ? "catching up" : "caught up"} (blocks behind: ${blocksBehind})`,
+                );
             }
-            
+
             // Update polling interval if catchup status changed
             if (wasCatchingUp !== this.isCatchingUp) {
                 this.updatePollingInterval();
             }
-            
+
             // Don't index if we're caught up
             if (fromBlock > latestBlock) {
                 log.debug(`📊 Caught up to latest block ${latestBlock}`);
