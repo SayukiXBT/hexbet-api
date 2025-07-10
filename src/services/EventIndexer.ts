@@ -55,27 +55,14 @@ export class EventIndexer {
 
     async indexEvents(fromBlock: number, toBlock: number) {
         try {
-            log.info(`Indexing events from block ${fromBlock} to ${toBlock}`);
-
             // Index BetPlaced events
             await this.indexBetPlacedEvents(fromBlock, toBlock);
-            await this.delay(500); // Increased delay to prevent batching
-
             // Index BetSettled events
             await this.indexBetSettledEvents(fromBlock, toBlock);
-            await this.delay(500); // Increased delay to prevent batching
-
             // Index BetExpired events
             await this.indexBetExpiredEvents(fromBlock, toBlock);
-            await this.delay(500); // Increased delay to prevent batching
-
             // Index WinningsClaimed events
             await this.indexWinningsClaimedEvents(fromBlock, toBlock);
-            await this.delay(500); // Increased delay to prevent batching
-
-            log.info(
-                `Successfully indexed events from block ${fromBlock} to ${toBlock}`,
-            );
         } catch (error) {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             log.error("Error indexing events:", error as any);
@@ -84,10 +71,6 @@ export class EventIndexer {
     }
 
     private async indexBetPlacedEvents(fromBlock: number, toBlock: number) {
-        log.info(
-            `🔍 Querying BetPlaced events from block ${fromBlock} to ${toBlock}`,
-        );
-
         try {
             // Get the appropriate provider for this block range
             const provider = await this.dualProvider.getProviderForBlockRange(
@@ -108,13 +91,15 @@ export class EventIndexer {
                 return await contract.queryFilter(filter, fromBlock, toBlock);
             });
 
-            log.info(
-                `Found ${events.length} BetPlaced events in block range ${fromBlock}-${toBlock}`,
-            );
+            if (events.length > 0) {
+                log.info(
+                    `🎯 Found ${events.length} BetPlaced events in block range ${fromBlock}-${toBlock}`,
+                );
+            }
 
             // Log first few events for debugging
             if (events.length > 0) {
-                // log.info(events);
+                log.debug(`📋 Sample BetPlaced events: ${events.length} found`);
             }
 
             // Group events by transactionHash
@@ -161,12 +146,10 @@ export class EventIndexer {
                         spinTargetBlock = args.targetBlock.toString();
                         indexedCount++;
                         log.info(
-                            `✅ Indexed BetPlaced event: User ${args.user} bet ${args.betIndex} guess ${args.guess.toString()} for ${args.wager.toString()} tokens`,
+                            `🎯 Indexed BetPlaced: User ${args.user} bet ${args.betIndex} guess ${args.guess.toString()} for ${args.wager.toString()} tokens`,
                         );
                     } else {
-                        log.debug(
-                            `⏭️  Skipped existing BetPlaced event: ${event.transactionHash}`,
-                        );
+                                            // Skip existing events silently
                     }
                 }
                 // After all events for this tx, emit new:spin ONCE if spin was created/updated
@@ -188,10 +171,6 @@ export class EventIndexer {
     }
 
     private async indexBetSettledEvents(fromBlock: number, toBlock: number) {
-        log.info(
-            `🔍 Querying BetSettled events from block ${fromBlock} to ${toBlock}`,
-        );
-
         try {
             // Get the appropriate provider for this block range
             const provider = await this.dualProvider.getProviderForBlockRange(
@@ -212,9 +191,11 @@ export class EventIndexer {
                 );
             });
 
-            log.info(
-                `Found ${events.length} BetSettled events in block range ${fromBlock}-${toBlock}`,
-            );
+            if (events.length > 0) {
+                log.info(
+                    `🎯 Found ${events.length} BetSettled events in block range ${fromBlock}-${toBlock}`,
+                );
+            }
 
             let indexedCount = 0;
             for (const event of events) {
@@ -247,12 +228,10 @@ export class EventIndexer {
                         indexedCount++;
                         const result = args.won ? "WON" : "LOST";
                         log.info(
-                            `🎯 Indexed BetSettled event: User ${args.user} ${result} bet ${args.betIndex} - Hex: ${args.firstHex.toString()},${args.secondHex.toString()} - Payout: ${args.payout.toString()} tokens`,
+                            `🎯 Indexed BetSettled: User ${args.user} ${result} bet ${args.betIndex} - Hex: ${args.firstHex.toString()},${args.secondHex.toString()} - Payout: ${args.payout.toString()} tokens`,
                         );
                     } else {
-                        log.debug(
-                            `⏭️  Skipped existing BetSettled event: ${event.transactionHash}`,
-                        );
+                        // Skip existing events silently
                     }
                 }
             }
@@ -270,10 +249,6 @@ export class EventIndexer {
     }
 
     private async indexBetExpiredEvents(fromBlock: number, toBlock: number) {
-        log.info(
-            `🔍 Querying BetExpired events from block ${fromBlock} to ${toBlock}`,
-        );
-
         try {
             // Get the appropriate provider for this block range
             const provider = await this.dualProvider.getProviderForBlockRange(
@@ -316,7 +291,7 @@ export class EventIndexer {
 
                         await this.betExpiredRepository.save(betExpired);
                         log.info(
-                            `⏰ Indexed BetExpired event: User ${args.user} bet ${args.betId} type ${args.betType.toString()} expired - Refund: ${args.amount.toString()} tokens`,
+                            `⏰ Indexed BetExpired: User ${args.user} bet ${args.betId} type ${args.betType.toString()} expired - Refund: ${args.amount.toString()} tokens`,
                         );
 
                         // Update the corresponding spin to mark it as expired
@@ -337,10 +312,6 @@ export class EventIndexer {
         fromBlock: number,
         toBlock: number,
     ) {
-        log.info(
-            `🔍 Querying WinningsClaimed events from block ${fromBlock} to ${toBlock}`,
-        );
-
         try {
             const provider = await this.dualProvider.getProviderForBlockRange(
                 fromBlock,
@@ -382,8 +353,8 @@ export class EventIndexer {
                         await this.winningsClaimedRepository.save(
                             winningsClaimed,
                         );
-                        log.debug(
-                            `Indexed WinningsClaimed event: ${event.transactionHash}`,
+                        log.info(
+                            `💰 Indexed WinningsClaimed: User ${args.user} claimed ${args.amount.toString()} tokens`,
                         );
                     }
                 }
@@ -706,9 +677,6 @@ export class EventIndexer {
 
                 // Update the last indexed block
                 await this.updateLastIndexedBlock(chunkEnd);
-
-                // Small delay to avoid overwhelming RPC
-                await this.delay(100);
             } catch (error) {
                 log.error(
                     `❌ Error backfilling blocks ${block}-${chunkEnd}:`,

@@ -28,14 +28,8 @@ export class DualProvider {
             const blocksFromTip = latestBlock - blockNumber;
 
             if (blocksFromTip > this.archiveBlockThreshold) {
-                log.info(
-                    `📚 Using archive provider for block ${blockNumber} (${blocksFromTip} blocks from tip)`,
-                );
                 return this.archiveProvider;
             } else {
-                log.info(
-                    `🏠 Using local provider for block ${blockNumber} (${blocksFromTip} blocks from tip)`,
-                );
                 return this.localProvider;
             }
         } catch (error) {
@@ -64,14 +58,8 @@ export class DualProvider {
                 fromBlocksFromTip > this.archiveBlockThreshold ||
                 toBlocksFromTip > this.archiveBlockThreshold
             ) {
-                log.info(
-                    `📚 Using archive provider for block range ${fromBlock}-${toBlock}`,
-                );
                 return this.archiveProvider;
             } else {
-                log.info(
-                    `🏠 Using local provider for block range ${fromBlock}-${toBlock}`,
-                );
                 return this.localProvider;
             }
         } catch (error) {

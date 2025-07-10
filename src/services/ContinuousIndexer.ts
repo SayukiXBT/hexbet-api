@@ -119,7 +119,10 @@ export class ContinuousIndexer {
             const blocksBehind = latestBlock - fromBlock + 1;
             this.isCatchingUp = blocksBehind > this.catchupThreshold;
             
-            log.info(`🔍 Catchup check: fromBlock=${fromBlock}, latestBlock=${latestBlock}, blocksBehind=${blocksBehind}, isCatchingUp=${this.isCatchingUp}, wasCatchingUp=${wasCatchingUp}`);
+            // Only log catchup status changes
+            if (wasCatchingUp !== this.isCatchingUp) {
+                log.info(`🔄 Catchup status changed: ${wasCatchingUp ? 'catching up' : 'caught up'} → ${this.isCatchingUp ? 'catching up' : 'caught up'} (blocks behind: ${blocksBehind})`);
+            }
             
             // Update polling interval if catchup status changed
             if (wasCatchingUp !== this.isCatchingUp) {
@@ -128,7 +131,7 @@ export class ContinuousIndexer {
             
             // Don't index if we're caught up
             if (fromBlock > latestBlock) {
-                log.info(`📊 Caught up to latest block ${latestBlock}`);
+                log.debug(`📊 Caught up to latest block ${latestBlock}`);
                 return;
             }
 
@@ -142,9 +145,12 @@ export class ContinuousIndexer {
                     latestBlock,
                 );
 
-                log.info(
-                    `🔄 Indexing chunk: blocks ${currentBlock}-${chunkEnd} (latest: ${latestBlock})`,
-                );
+                // Only log when we're actually processing blocks
+                if (currentBlock <= latestBlock) {
+                    log.debug(
+                        `🔄 Indexing chunk: blocks ${currentBlock}-${chunkEnd} (latest: ${latestBlock})`,
+                    );
+                }
 
                 await this.eventIndexer.indexEvents(currentBlock, chunkEnd);
 
@@ -157,17 +163,12 @@ export class ContinuousIndexer {
                 await this.eventIndexer.updateLastIndexedBlock(chunkEnd);
 
                 totalProcessed += chunkEnd - currentBlock + 1;
-                log.info(
+                log.debug(
                     `✅ Indexed chunk ${currentBlock}-${chunkEnd}. Total processed: ${totalProcessed}. Last indexed: ${chunkEnd}`,
                 );
 
                 // Move to next chunk
                 currentBlock = chunkEnd + 1;
-
-                // Small delay between chunks to avoid overwhelming RPC
-                if (currentBlock <= latestBlock) {
-                    await this.delay(100);
-                }
             }
         } catch (error) {
             const errorMessage =
@@ -210,9 +211,6 @@ export class ContinuousIndexer {
                 log.info(
                     `✅ Backfill progress: ${progress}% (${processedBlocks}/${totalBlocks} blocks)`,
                 );
-
-                // Small delay to avoid overwhelming RPC
-                await this.delay(100);
             } catch (error) {
                 log.error(
                     `❌ Error backfilling blocks ${block}-${chunkEnd}:`,

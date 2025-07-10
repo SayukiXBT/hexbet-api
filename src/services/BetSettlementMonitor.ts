@@ -120,8 +120,6 @@ export class BetSettlementMonitor {
 
                 for (const { user } of usersWithUnsettledBets) {
                     await this.settleUserBets(user, currentBlock);
-                    // Small delay between settlements to avoid overwhelming the network
-                    await this.delay(1000);
                 }
             }
         } catch (error) {
@@ -356,9 +354,5 @@ export class BetSettlementMonitor {
             unsettledBetsCount,
             approachingExpirationCount,
         };
-    }
-
-    private delay(ms: number): Promise<void> {
-        return new Promise((resolve) => setTimeout(resolve, ms));
     }
 }
