@@ -16,7 +16,7 @@ export class ContinuousIndexer {
     private state: IndexingState;
     private intervalId?: NodeJS.Timeout;
     private chunkSize: number = 1000; // Smaller chunks for continuous indexing
-    private pollingInterval: number = 400; // 500ms polling interval
+    private pollingInterval: number = 800; // 700ms polling interval
     private onNewBlock?: (blockNumber: number) => void;
     private lastBroadcastedBlock: number = 0;
 
