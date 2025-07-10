@@ -23,7 +23,8 @@ export class BetSettlementMonitor {
     }) => void;
 
     constructor(
-        rpcUrl: string,
+        archiveRpcUrl: string,
+        localRpcUrl: string,
         contractAddress: string,
         privateKey: string,
         private rouletteABI: { abi: ethers.InterfaceAbi },
@@ -35,7 +36,8 @@ export class BetSettlementMonitor {
             success: boolean;
         }) => void,
     ) {
-        this.provider = new ethers.JsonRpcProvider(rpcUrl);
+        // Use local provider for settlement operations (faster for recent blocks)
+        this.provider = new ethers.JsonRpcProvider(localRpcUrl);
         this.wallet = new ethers.Wallet(privateKey, this.provider);
         this.contract = new ethers.Contract(
             contractAddress,
@@ -45,7 +47,7 @@ export class BetSettlementMonitor {
         this.onManualSettlement = onManualSettlement;
 
         log.info(
-            `🔍 BetSettlementMonitor initialized for contract: ${contractAddress}`,
+            `🔍 BetSettlementMonitor initialized for contract: ${contractAddress} using local RPC`,
         );
     }
 
@@ -85,6 +87,10 @@ export class BetSettlementMonitor {
     private async checkAndSettleBets(): Promise<void> {
         try {
             const currentBlock = await this.provider.getBlockNumber();
+            log.debug(
+                `🔗 BetSettlementMonitor using local provider for current block: ${currentBlock}`,
+            );
+
             const expirationBlock = currentBlock - 256; // Blockhash expires after 256 blocks
 
             // Find users with unsettled bets that are approaching expiration

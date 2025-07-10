@@ -110,7 +110,8 @@ async function main() {
         log.info(`Using contract address: ${contractAddress}`);
 
         eventIndexer = new EventIndexer(
-            process.env.RPC_URL,
+            process.env.RPC_URL!,
+            process.env.LOCAL_RPC || process.env.RPC_URL!,
             contractAddress,
             broadcastNewSpin,
             broadcastSpinUpdate,
@@ -126,7 +127,8 @@ async function main() {
         // Initialize bet settlement monitor if private key is provided
         if (process.env.PRIVATE_KEY) {
             betSettlementMonitor = new BetSettlementMonitor(
-                process.env.RPC_URL,
+                process.env.RPC_URL!,
+                process.env.LOCAL_RPC || process.env.RPC_URL!,
                 contractAddress,
                 process.env.PRIVATE_KEY,
                 rouletteABI,

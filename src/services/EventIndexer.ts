@@ -8,12 +8,13 @@ import { WinningsClaimed } from "../entities/WinningsClaimed";
 import { Spin } from "../entities/Spin";
 import { log } from "@sayukixbt/log";
 import { ROULETTE_ADDRESS } from "../constants/blockchain";
+import { DualProvider } from "./DualProvider";
 
 // Import the ABI
 import rouletteABI from "../abi/Roulette.json";
 
 export class EventIndexer {
-    private provider: ethers.Provider;
+    private dualProvider: DualProvider;
     private contract: ethers.Contract;
     private betPlacedRepository = AppDataSource.getRepository(BetPlaced);
     private betSettledRepository = AppDataSource.getRepository(BetSettled);
@@ -28,23 +29,27 @@ export class EventIndexer {
     private onSpinUpdated?: (spin: Spin) => void; // Callback for spin update events
 
     constructor(
-        rpcUrl: string,
+        archiveRpcUrl: string,
+        localRpcUrl: string,
         contractAddress: string = ROULETTE_ADDRESS,
         onNewSpin?: (spin: Spin) => void,
         onSpinUpdated?: (spin: Spin) => void,
     ) {
-        log.info(`🔗 Initializing EventIndexer with RPC: ${rpcUrl}`);
-        this.provider = new ethers.JsonRpcProvider(rpcUrl);
+        log.info(`🔗 Initializing EventIndexer with dual RPC setup`);
+        this.dualProvider = new DualProvider(archiveRpcUrl, localRpcUrl);
+
+        // Initialize contract with archive provider (will be updated per request)
         this.contract = new ethers.Contract(
             contractAddress,
             rouletteABI.abi,
-            this.provider,
+            this.dualProvider.getArchiveProvider(),
         );
+
         this.onNewSpin = onNewSpin;
         this.onSpinUpdated = onSpinUpdated;
         log.info(`EventIndexer initialized for contract: ${contractAddress}`);
 
-        // Test the connection
+        // Test the connections
         this.testConnection();
     }
 
@@ -84,15 +89,23 @@ export class EventIndexer {
         );
 
         try {
+            // Get the appropriate provider for this block range
+            const provider = await this.dualProvider.getProviderForBlockRange(
+                fromBlock,
+                toBlock,
+            );
+
+            const contract = new ethers.Contract(
+                this.contract.target,
+                rouletteABI.abi,
+                provider,
+            );
+
             // Test the filter first
-            const filter = this.contract.filters.BetPlaced();
+            const filter = contract.filters.BetPlaced();
 
             const events = await this.retryWithBackoff(async () => {
-                return await this.contract.queryFilter(
-                    filter,
-                    fromBlock,
-                    toBlock,
-                );
+                return await contract.queryFilter(filter, fromBlock, toBlock);
             });
 
             log.info(
@@ -175,101 +188,148 @@ export class EventIndexer {
     }
 
     private async indexBetSettledEvents(fromBlock: number, toBlock: number) {
-        const events = await this.retryWithBackoff(async () => {
-            return await this.contract.queryFilter(
-                this.contract.filters.BetSettled(),
+        log.info(
+            `🔍 Querying BetSettled events from block ${fromBlock} to ${toBlock}`,
+        );
+
+        try {
+            // Get the appropriate provider for this block range
+            const provider = await this.dualProvider.getProviderForBlockRange(
                 fromBlock,
                 toBlock,
             );
-        });
+            const contract = new ethers.Contract(
+                this.contract.target,
+                rouletteABI.abi,
+                provider,
+            );
 
-        log.info(
-            `Found ${events.length} BetSettled events in block range ${fromBlock}-${toBlock}`,
-        );
+            const events = await this.retryWithBackoff(async () => {
+                return await contract.queryFilter(
+                    contract.filters.BetSettled(),
+                    fromBlock,
+                    toBlock,
+                );
+            });
 
-        let indexedCount = 0;
-        for (const event of events) {
-            if ("args" in event && event.args) {
-                const args = event.args as any;
-                const existing = await this.betSettledRepository.findOne({
-                    where: {
-                        user: args.user,
-                        betIndex: args.betIndex.toString(),
-                        transactionHash: event.transactionHash,
-                    },
-                });
+            log.info(
+                `Found ${events.length} BetSettled events in block range ${fromBlock}-${toBlock}`,
+            );
 
-                if (!existing) {
-                    const betSettled = new BetSettled();
-                    betSettled.user = args.user;
-                    betSettled.betIndex = args.betIndex.toString();
-                    betSettled.won = args.won;
-                    betSettled.firstHex = args.firstHex.toString(); // Convert BigInt to string
-                    betSettled.secondHex = args.secondHex.toString(); // Convert BigInt to string
-                    betSettled.payout = args.payout.toString();
-                    betSettled.transactionHash = event.transactionHash;
-                    betSettled.blockNumber = event.blockNumber;
+            let indexedCount = 0;
+            for (const event of events) {
+                if ("args" in event && event.args) {
+                    const args = event.args as any;
+                    const existing = await this.betSettledRepository.findOne({
+                        where: {
+                            user: args.user,
+                            betIndex: args.betIndex.toString(),
+                            transactionHash: event.transactionHash,
+                        },
+                    });
 
-                    await this.betSettledRepository.save(betSettled);
+                    if (!existing) {
+                        const betSettled = new BetSettled();
+                        betSettled.user = args.user;
+                        betSettled.betIndex = args.betIndex.toString();
+                        betSettled.won = args.won;
+                        betSettled.firstHex = args.firstHex.toString(); // Convert BigInt to string
+                        betSettled.secondHex = args.secondHex.toString(); // Convert BigInt to string
+                        betSettled.payout = args.payout.toString();
+                        betSettled.transactionHash = event.transactionHash;
+                        betSettled.blockNumber = event.blockNumber;
 
-                    // Update spin record with settlement info
-                    await this.updateSpinFromBetSettled(args, event);
+                        await this.betSettledRepository.save(betSettled);
 
-                    indexedCount++;
-                    const result = args.won ? "WON" : "LOST";
-                    log.info(
-                        `🎯 Indexed BetSettled event: User ${args.user} ${result} bet ${args.betIndex} - Hex: ${args.firstHex.toString()},${args.secondHex.toString()} - Payout: ${args.payout.toString()} tokens`,
-                    );
-                } else {
-                    log.debug(
-                        `⏭️  Skipped existing BetSettled event: ${event.transactionHash}`,
-                    );
+                        // Update spin record with settlement info
+                        await this.updateSpinFromBetSettled(args, event);
+
+                        indexedCount++;
+                        const result = args.won ? "WON" : "LOST";
+                        log.info(
+                            `🎯 Indexed BetSettled event: User ${args.user} ${result} bet ${args.betIndex} - Hex: ${args.firstHex.toString()},${args.secondHex.toString()} - Payout: ${args.payout.toString()} tokens`,
+                        );
+                    } else {
+                        log.debug(
+                            `⏭️  Skipped existing BetSettled event: ${event.transactionHash}`,
+                        );
+                    }
                 }
             }
-        }
 
-        if (indexedCount > 0) {
-            log.info(`📊 Indexed ${indexedCount} new BetSettled events`);
+            if (indexedCount > 0) {
+                log.info(`📊 Indexed ${indexedCount} new BetSettled events`);
+            }
+        } catch (error) {
+            log.error(
+                `❌ Error querying BetSettled events:`,
+                error instanceof Error ? error.message : String(error),
+            );
+            throw error;
         }
     }
 
     private async indexBetExpiredEvents(fromBlock: number, toBlock: number) {
-        const events = await this.retryWithBackoff(async () => {
-            return await this.contract.queryFilter(
-                this.contract.filters.BetExpired(),
+        log.info(
+            `🔍 Querying BetExpired events from block ${fromBlock} to ${toBlock}`,
+        );
+
+        try {
+            // Get the appropriate provider for this block range
+            const provider = await this.dualProvider.getProviderForBlockRange(
                 fromBlock,
                 toBlock,
             );
-        });
 
-        for (const event of events) {
-            if ("args" in event && event.args) {
-                const args = event.args as any;
-                const existing = await this.betExpiredRepository.findOne({
-                    where: {
-                        betId: args.betId.toString(),
-                        transactionHash: event.transactionHash,
-                    },
-                });
+            const contract = new ethers.Contract(
+                this.contract.target,
+                rouletteABI.abi,
+                provider,
+            );
 
-                if (!existing) {
-                    const betExpired = new BetExpired();
-                    betExpired.betId = args.betId.toString();
-                    betExpired.user = args.user;
-                    betExpired.amount = args.amount.toString();
-                    betExpired.betType = args.betType.toString(); // Convert BigInt to string
-                    betExpired.transactionHash = event.transactionHash;
-                    betExpired.blockNumber = event.blockNumber;
+            const events = await this.retryWithBackoff(async () => {
+                return await contract.queryFilter(
+                    contract.filters.BetExpired(),
+                    fromBlock,
+                    toBlock,
+                );
+            });
 
-                    await this.betExpiredRepository.save(betExpired);
-                    log.info(
-                        `⏰ Indexed BetExpired event: User ${args.user} bet ${args.betId} type ${args.betType.toString()} expired - Refund: ${args.amount.toString()} tokens`,
-                    );
+            for (const event of events) {
+                if ("args" in event && event.args) {
+                    const args = event.args as any;
+                    const existing = await this.betExpiredRepository.findOne({
+                        where: {
+                            betId: args.betId.toString(),
+                            transactionHash: event.transactionHash,
+                        },
+                    });
 
-                    // Update the corresponding spin to mark it as expired
-                    await this.updateSpinFromBetExpired(args);
+                    if (!existing) {
+                        const betExpired = new BetExpired();
+                        betExpired.betId = args.betId.toString();
+                        betExpired.user = args.user;
+                        betExpired.amount = args.amount.toString();
+                        betExpired.betType = args.betType.toString(); // Convert BigInt to string
+                        betExpired.transactionHash = event.transactionHash;
+                        betExpired.blockNumber = event.blockNumber;
+
+                        await this.betExpiredRepository.save(betExpired);
+                        log.info(
+                            `⏰ Indexed BetExpired event: User ${args.user} bet ${args.betId} type ${args.betType.toString()} expired - Refund: ${args.amount.toString()} tokens`,
+                        );
+
+                        // Update the corresponding spin to mark it as expired
+                        await this.updateSpinFromBetExpired(args);
+                    }
                 }
             }
+        } catch (error) {
+            log.error(
+                `❌ Error querying BetExpired events:`,
+                error instanceof Error ? error.message : String(error),
+            );
+            throw error;
         }
     }
 
@@ -277,37 +337,64 @@ export class EventIndexer {
         fromBlock: number,
         toBlock: number,
     ) {
-        const events = await this.retryWithBackoff(async () => {
-            return await this.contract.queryFilter(
-                this.contract.filters.WinningsClaimed(),
+        log.info(
+            `🔍 Querying WinningsClaimed events from block ${fromBlock} to ${toBlock}`,
+        );
+
+        try {
+            // Get the appropriate provider for this block range
+            const provider = await this.dualProvider.getProviderForBlockRange(
                 fromBlock,
                 toBlock,
             );
-        });
 
-        for (const event of events) {
-            if ("args" in event && event.args) {
-                const args = event.args as any;
-                const existing = await this.winningsClaimedRepository.findOne({
-                    where: {
-                        user: args.user,
-                        transactionHash: event.transactionHash,
-                    },
-                });
+            const contract = new ethers.Contract(
+                this.contract.target,
+                rouletteABI.abi,
+                provider,
+            );
 
-                if (!existing) {
-                    const winningsClaimed = new WinningsClaimed();
-                    winningsClaimed.user = args.user;
-                    winningsClaimed.amount = args.amount.toString();
-                    winningsClaimed.transactionHash = event.transactionHash;
-                    winningsClaimed.blockNumber = event.blockNumber;
+            const events = await this.retryWithBackoff(async () => {
+                return await contract.queryFilter(
+                    contract.filters.WinningsClaimed(),
+                    fromBlock,
+                    toBlock,
+                );
+            });
 
-                    await this.winningsClaimedRepository.save(winningsClaimed);
-                    log.debug(
-                        `Indexed WinningsClaimed event: ${event.transactionHash}`,
-                    );
+            for (const event of events) {
+                if ("args" in event && event.args) {
+                    const args = event.args as any;
+                    const existing =
+                        await this.winningsClaimedRepository.findOne({
+                            where: {
+                                user: args.user,
+                                transactionHash: event.transactionHash,
+                            },
+                        });
+
+                    if (!existing) {
+                        const winningsClaimed = new WinningsClaimed();
+                        winningsClaimed.user = args.user;
+                        winningsClaimed.amount = args.amount.toString();
+                        winningsClaimed.transactionHash = event.transactionHash;
+                        winningsClaimed.blockNumber = event.blockNumber;
+
+                        await this.winningsClaimedRepository.save(
+                            winningsClaimed,
+                        );
+                        log.debug(
+                            `Indexed WinningsClaimed event: ${event.transactionHash}`,
+                        );
+                    }
                 }
             }
+        } catch (error) {
+            log.error(
+                `❌ Error querying WinningsClaimed events:`,
+                error instanceof Error ? error.message : String(error),
+            );
+            throw error;
         }
     }
 
@@ -557,21 +644,20 @@ export class EventIndexer {
 
     async getLatestBlockNumber(): Promise<number> {
         return await this.retryWithBackoff(async () => {
-            return await this.provider.getBlockNumber();
+            const blockNumber = await this.dualProvider.getLatestBlockNumber();
+            log.debug(`📊 Latest block number: ${blockNumber}`);
+            return blockNumber;
         });
     }
 
     private async testConnection(): Promise<void> {
         try {
-            log.info("🔍 Testing RPC connection...");
-            const network = await this.provider.getNetwork();
-            const latestBlock = await this.provider.getBlockNumber();
-            log.info(
-                `✅ RPC connection successful! Network: ${network.name} (chainId: ${network.chainId}), Latest block: ${latestBlock}`,
-            );
+            log.info("🔍 Testing RPC connections...");
+            await this.dualProvider.testConnections();
 
             // Test querying all events from the contract
             log.info("🔍 Testing event querying...");
+            const latestBlock = await this.dualProvider.getLatestBlockNumber();
             const allEvents = await this.contract.queryFilter(
                 "*",
                 latestBlock - 100,
