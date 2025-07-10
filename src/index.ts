@@ -69,7 +69,7 @@ async function main() {
         log.info(`📡 Broadcasted new block: ${blockNumber}`);
     };
 
-    // Function to broadcast manual bet settlement to all connected clients
+    // Function to broadcast manual bet settlement to the specific user
     const broadcastManualSettlement = (settlementData: {
         user: string;
         betIndices: string[];
@@ -77,12 +77,13 @@ async function main() {
         blockNumber: number;
         success: boolean;
     }) => {
-        io.emit("bet:manually-settled", {
+        const roomName = `spins:${settlementData.user.toLowerCase()}`;
+        io.to(roomName).emit("bet:manually-settled", {
             ...settlementData,
             timestamp: new Date().toISOString(),
         });
         log.info(
-            `📡 Broadcasted manual settlement for user ${settlementData.user}: ${settlementData.success ? "SUCCESS" : "FAILED"}`,
+            `📡 Broadcasted manual settlement to room ${roomName}: ${settlementData.success ? "SUCCESS" : "FAILED"}`,
         );
     };
 
@@ -375,129 +376,6 @@ async function main() {
                 error instanceof Error ? error.message : String(error),
             );
             res.status(500).json({ error: "Failed to get spin" });
-        }
-    });
-
-    // Manual endpoint to check and update expired spins with on-chain verification
-    app.post("/admin/check-expired-spins", async (req, res) => {
-        try {
-            if (!eventIndexer) {
-                res.status(400).json({ error: "Event indexer not available" });
-                return;
-            }
-
-            // Get current block
-            const currentBlock = await eventIndexer.getLatestBlockNumber();
-
-            const spinRepository = AppDataSource.getRepository(Spin);
-
-            // Find all spins that should be expired
-            const expiredSpins = await spinRepository
-                .createQueryBuilder("spin")
-                .where("spin.isExpired = :isExpired", { isExpired: false })
-                .andWhere(
-                    "CAST(spin.targetBlock AS INTEGER) + 256 < :currentBlock",
-                    { currentBlock },
-                )
-                .getMany();
-
-            if (expiredSpins.length === 0) {
-                res.json({
-                    message: "No expired spins found",
-                    currentBlock: currentBlock,
-                    checkedSpins: 0,
-                    updatedSpins: 0,
-                });
-                return;
-            }
-
-            // Check each spin on-chain and update if actually expired
-            let updatedCount = 0;
-            const results = [];
-
-            for (const spin of expiredSpins) {
-                try {
-                    // Use the first bet index from the spin to check expiration status on-chain
-                    if (spin.betIndexes.length > 0) {
-                        const betIndex = spin.betIndexes[0];
-
-                        // Use retry logic for the on-chain call
-                        const betInfo = await eventIndexer["retryWithBackoff"](
-                            async () => {
-                                return await eventIndexer[
-                                    "contract"
-                                ].getUserBet(spin.user, betIndex);
-                            },
-                        );
-
-                        // betInfo.isExpired is the 8th field in the getUserBet return tuple
-                        const isExpiredOnChain = betInfo[7]; // isExpired field
-
-                        if (isExpiredOnChain) {
-                            spin.isExpired = true;
-                            spin.updatedAt = new Date();
-                            await spinRepository.save(spin);
-
-                            // Broadcast the spin update to subscribed clients
-                            broadcastSpinUpdate(spin);
-
-                            updatedCount++;
-
-                            results.push({
-                                user: spin.user,
-                                targetBlock: spin.targetBlock,
-                                isSettled: spin.isSettled,
-                                isExpiredOnChain: true,
-                                updated: true,
-                            });
-                        } else {
-                            results.push({
-                                user: spin.user,
-                                targetBlock: spin.targetBlock,
-                                isSettled: spin.isSettled,
-                                isExpiredOnChain: false,
-                                updated: false,
-                            });
-                        }
-                    } else {
-                        results.push({
-                            user: spin.user,
-                            targetBlock: spin.targetBlock,
-                            isSettled: spin.isSettled,
-                            error: "No bet indexes found",
-                            updated: false,
-                        });
-                    }
-
-                    // Small delay to avoid overwhelming RPC
-                    await new Promise((resolve) => setTimeout(resolve, 100));
-                } catch (error) {
-                    results.push({
-                        user: spin.user,
-                        targetBlock: spin.targetBlock,
-                        isSettled: spin.isSettled,
-                        error:
-                            error instanceof Error
-                                ? error.message
-                                : String(error),
-                        updated: false,
-                    });
-                }
-            }
-
-            res.json({
-                message: `Checked ${expiredSpins.length} spins, updated ${updatedCount} as expired`,
-                currentBlock: currentBlock,
-                checkedSpins: expiredSpins.length,
-                updatedSpins: updatedCount,
-                results: results,
-            });
-        } catch (error) {
-            log.error(
-                "Error checking expired spins:",
-                error instanceof Error ? error.message : String(error),
-            );
-            res.status(500).json({ error: "Failed to check expired spins" });
         }
     });
 

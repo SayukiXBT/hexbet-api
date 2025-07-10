@@ -5,3 +5,5 @@ dist
 .env
 *.db
 *journal
+*db-shm
+*.db-wal
